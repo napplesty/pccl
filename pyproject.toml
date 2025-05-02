@@ -1,0 +1,29 @@
+[build-system]
+requires = [
+    "setuptools>=42.0.0",
+    "wheel>=0.37.0",
+    "torch>=2.7.0",
+    "fastapi>=0.115.12"
+]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pccl"
+version = "1.0.0"
+description = "python communication library"
+readme = "README.md"
+requires-python = ">=3.11"
+license = {file = "LICENSE"}
+authors = [
+    {name = "qishuyao"}
+]
+dependencies = [
+    "torch>=2.4.0",
+    "fastapi>=0.115.12"
+]
+
+[project.urls]
+repository = "https://github.com/napplesty/pccl.git"
+
+[tool.setuptools]
+packages = ["pccl"]

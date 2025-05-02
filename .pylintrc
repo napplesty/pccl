@@ -1,0 +1,36 @@
+[MASTER]
+disable=
+    C0103, # Invalid name
+    C0111, # Missing docstring
+    W0212, # Access to a protected member
+    R0903, # Too few public methods
+    R0913, # Too many arguments
+    R0914, # Too many local variables
+    W0621, # Redefining name from outer scope
+    W0703, # Catching too general exception
+    W1202, # Use % formatting in logging functions
+
+ignore=CVS,pccl-env
+ignore-patterns=
+
+[FORMAT]
+max-line-length=100
+indent-string='    '
+
+[REPORTS]
+output-format=text
+reports=yes
+evaluation=10.0 - ((float(5 * error + warning + refactor + convention) / statement) * 10)
+
+[BASIC]
+good-names=i,j,k,ex,Run,_,id,up
+
+[SIMILARITIES]
+min-similarity-lines=7
+ignore-comments=yes
+ignore-docstrings=yes
+ignore-imports=yes
+
+[TYPECHECK]
+ignored-modules=numpy,torch,tensorflow,cv2,setuptools
+ignored-classes=numpy,torch
