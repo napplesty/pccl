@@ -26,6 +26,8 @@ LIBRARY_DIRS = []
 
 INCLUDE_DIRS = [
     f"{CURRENT_DIR}/include",
+    f"{CURRENT_DIR}/thirdparty/json/include",
+    f"{CURRENT_DIR}/thirdparty/cpp-httplib",
 ]
 
 CSRCS = [

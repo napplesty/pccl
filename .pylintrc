@@ -9,6 +9,10 @@ disable=
     W0621, # Redefining name from outer scope
     W0703, # Catching too general exception
     W1202, # Use % formatting in logging functions
+    E0401, # Unable to import
+    C0413,
+    C0411,
+    C0301,
 
 ignore=CVS,pccl-env
 ignore-patterns=

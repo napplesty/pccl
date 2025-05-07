@@ -265,10 +265,6 @@ using __float162 = __nv_half2;
 
 }  // namespace pccl
 
-extern "C" __host__ __device__ void __assert_fail(
-    const char *__assertion, const char *__file, unsigned int __line,
-    const char *__function) __THROW;
-
 #endif
 
 #define POLL_MAYBE_JAILBREAK(__cond, __max_spin_cnt)                     \

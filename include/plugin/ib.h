@@ -43,13 +43,26 @@ struct IBVerbs {
     ibv_query_port_lib = (ibv_query_port_t)dlsym(handle, "ibv_query_port");
     ibv_reg_mr_iova2_lib =
         (ibv_reg_mr_iova2_t)dlsym(handle, "ibv_reg_mr_iova2");
+    ibv_create_comp_channel_lib =
+        (ibv_create_comp_channel_t)dlsym(handle, "ibv_create_comp_channel");
+    ibv_destroy_comp_channel_lib =
+        (ibv_destroy_comp_channel_t)dlsym(handle, "ibv_destroy_comp_channel");
+    ibv_get_cq_event_lib =
+        (ibv_get_cq_event_t)dlsym(handle, "ibv_get_cq_event");
+    ibv_ack_cq_events_lib =
+        (ibv_ack_cq_events_t)dlsym(handle, "ibv_ack_cq_events");
+    ibv_req_notify_cq_lib =
+        (ibv_req_notify_cq_t)dlsym(handle, "ibv_req_notify_cq");
 
     if (!ibv_get_device_list_lib || !ibv_free_device_list_lib ||
         !ibv_alloc_pd_lib || !ibv_dealloc_pd_lib || !ibv_open_device_lib ||
         !ibv_close_device_lib || !ibv_query_device_lib || !ibv_create_cq_lib ||
         !ibv_create_qp_lib || !ibv_destroy_cq_lib || !ibv_reg_mr_lib ||
         !ibv_dereg_mr_lib || !ibv_query_gid_lib || !ibv_reg_mr_iova2_lib ||
-        !ibv_modify_qp_lib || !ibv_destroy_qp_lib || !ibv_query_port_lib) {
+        !ibv_modify_qp_lib || !ibv_destroy_qp_lib || !ibv_query_port_lib ||
+        !ibv_create_comp_channel_lib || !ibv_destroy_comp_channel_lib ||
+        !ibv_get_cq_event_lib || !ibv_ack_cq_events_lib ||
+        !ibv_req_notify_cq_lib) {
       throw std::runtime_error(
           "Failed to load one or more function in the ibibverbs library: " +
           std::string(dlerror()));
@@ -238,6 +251,47 @@ struct IBVerbs {
     }
   }
 
+  static struct ibv_comp_channel *ibv_create_comp_channel(
+      struct ibv_context *context) {
+    if (!initialized) initialize();
+    if (ibv_create_comp_channel_lib) {
+      return ibv_create_comp_channel_lib(context);
+    }
+    return nullptr;
+  }
+
+  static int ibv_destroy_comp_channel(struct ibv_comp_channel *channel) {
+    if (!initialized) initialize();
+    if (ibv_destroy_comp_channel_lib) {
+      return ibv_destroy_comp_channel_lib(channel);
+    }
+    return -1;
+  }
+
+  static int ibv_get_cq_event(struct ibv_comp_channel *channel,
+                              struct ibv_cq **cq, void **context) {
+    if (!initialized) initialize();
+    if (ibv_get_cq_event_lib) {
+      return ibv_get_cq_event_lib(channel, cq, context);
+    }
+    return -1;
+  }
+
+  static void ibv_ack_cq_events(struct ibv_cq *cq, unsigned int nevents) {
+    if (!initialized) initialize();
+    if (ibv_ack_cq_events_lib) {
+      ibv_ack_cq_events_lib(cq, nevents);
+    }
+  }
+
+  static int ibv_req_notify_cq(struct ibv_cq *cq, int solicited_only) {
+    if (!initialized) initialize();
+    if (ibv_req_notify_cq_lib) {
+      return ibv_req_notify_cq_lib(cq, solicited_only);
+    }
+    return -1;
+  }
+
  private:
   static inline void *handle = nullptr;
 
@@ -265,6 +319,13 @@ struct IBVerbs {
   typedef struct ibv_mr *(*ibv_reg_mr_iova2_t)(struct ibv_pd *pd, void *addr,
                                                size_t length, uint64_t iova,
                                                unsigned int access);
+  typedef struct ibv_comp_channel *(*ibv_create_comp_channel_t)(
+      struct ibv_context *);
+  typedef int (*ibv_destroy_comp_channel_t)(struct ibv_comp_channel *);
+  typedef int (*ibv_get_cq_event_t)(struct ibv_comp_channel *, struct ibv_cq **,
+                                    void **);
+  typedef void (*ibv_ack_cq_events_t)(struct ibv_cq *, unsigned int);
+  typedef int (*ibv_req_notify_cq_t)(struct ibv_cq *, int);
 
   static inline ibv_get_device_list_t ibv_get_device_list_lib;
   static inline ibv_free_device_list_t ibv_free_device_list_lib = nullptr;
@@ -283,6 +344,12 @@ struct IBVerbs {
   static inline ibv_destroy_qp_t ibv_destroy_qp_lib = nullptr;
   static inline ibv_query_port_t ibv_query_port_lib = nullptr;
   static inline ibv_reg_mr_iova2_t ibv_reg_mr_iova2_lib = nullptr;
+  static inline ibv_create_comp_channel_t ibv_create_comp_channel_lib = nullptr;
+  static inline ibv_destroy_comp_channel_t ibv_destroy_comp_channel_lib =
+      nullptr;
+  static inline ibv_get_cq_event_t ibv_get_cq_event_lib = nullptr;
+  static inline ibv_ack_cq_events_t ibv_ack_cq_events_lib = nullptr;
+  static inline ibv_req_notify_cq_t ibv_req_notify_cq_lib = nullptr;
 
   static inline bool initialized = false;
 };
@@ -294,18 +361,18 @@ struct IbMrInfo {
 
 class IbMr {
  public:
-  virtual ~IbMr();
+  ~IbMr();
 
-  virtual IbMrInfo getInfo() const;
-  virtual const void *getBuff() const;
-  virtual uint32_t getLkey() const;
+  IbMrInfo getInfo() const;
+  const void *getBuff() const;
+  uint32_t getLkey() const;
 
  private:
   IbMr(ibv_pd *pd, void *buff, size_t size);
 
   ibv_mr *mr;
   void *buff;
-  std::size_t size;
+  size_t size;
 
   friend class IbCtx;
 };
@@ -327,36 +394,41 @@ enum class WsStatus {
 
 class IbQp {
  public:
-  virtual ~IbQp();
+  ~IbQp();
 
-  virtual void rtr([[maybe_unused]] const IbQpInfo &info);
-  virtual void rts();
-  virtual void stageSend([[maybe_unused]] const IbMr *mr,
-                         [[maybe_unused]] const IbMrInfo &info,
-                         [[maybe_unused]] uint32_t size,
-                         [[maybe_unused]] uint64_t wrId,
-                         [[maybe_unused]] uint64_t srcOffset,
-                         [[maybe_unused]] uint64_t dstOffset,
-                         [[maybe_unused]] bool signaled);
-  virtual void stageAtomicAdd([[maybe_unused]] const IbMr *mr,
-                              [[maybe_unused]] const IbMrInfo &info,
-                              [[maybe_unused]] uint64_t wrId,
-                              [[maybe_unused]] uint64_t dstOffset,
-                              [[maybe_unused]] uint64_t addVal,
-                              [[maybe_unused]] bool signaled);
-  virtual void stageSendWithImm(
+  void rtr([[maybe_unused]] const IbQpInfo &info);
+  void rts();
+  void stageLoad([[maybe_unused]] const IbMr *mr,
+                 [[maybe_unused]] const IbMrInfo &info,
+                 [[maybe_unused]] size_t size, [[maybe_unused]] uint64_t wrId,
+                 [[maybe_unused]] uint64_t srcOffset,
+                 [[maybe_unused]] uint64_t dstOffset,
+                 [[maybe_unused]] bool signaled);
+  void stageSend([[maybe_unused]] const IbMr *mr,
+                 [[maybe_unused]] const IbMrInfo &info,
+                 [[maybe_unused]] uint32_t size, [[maybe_unused]] uint64_t wrId,
+                 [[maybe_unused]] uint64_t srcOffset,
+                 [[maybe_unused]] uint64_t dstOffset,
+                 [[maybe_unused]] bool signaled);
+  void stageAtomicAdd([[maybe_unused]] const IbMr *mr,
+                      [[maybe_unused]] const IbMrInfo &info,
+                      [[maybe_unused]] uint64_t wrId,
+                      [[maybe_unused]] uint64_t dstOffset,
+                      [[maybe_unused]] uint64_t addVal,
+                      [[maybe_unused]] bool signaled);
+  void stageSendWithImm(
       [[maybe_unused]] const IbMr *mr, [[maybe_unused]] const IbMrInfo &info,
       [[maybe_unused]] uint32_t size, [[maybe_unused]] uint64_t wrId,
       [[maybe_unused]] uint64_t srcOffset, [[maybe_unused]] uint64_t dstOffset,
       [[maybe_unused]] bool signaled, [[maybe_unused]] unsigned int immData);
-  virtual void postSend();
-  virtual int pollCq();
+  void postSend();
+  int pollCq();
 
   IbQpInfo &getInfo() { return this->info; }
-  virtual int getWcStatus([[maybe_unused]] int idx) const;
-  virtual int getNumCqItems() const;
+  int getWcStatus([[maybe_unused]] int idx) const;
+  int getNumCqItems() const;
 
- private:
+ protected:
   struct WrInfo {
     ibv_send_wr *wr;
     ibv_sge *sge;
@@ -370,9 +442,9 @@ class IbQp {
 
   ibv_qp *qp;
   ibv_cq *cq;
-  std::shared_ptr<std::vector<ibv_wc>> wcs;
-  std::shared_ptr<std::vector<ibv_send_wr>> wrs;
-  std::shared_ptr<std::vector<ibv_sge>> sges;
+  ::std::vector<ibv_wc> wcs;
+  ::std::vector<ibv_send_wr> wrs;
+  ::std::vector<ibv_sge> sges;
   int wrn;
   int numSignaledPostedItems;
   int numSignaledStagedItems;
@@ -385,22 +457,22 @@ class IbQp {
 
 class IbCtx {
  public:
-  IbCtx(const std::string &devName);
+  IbCtx(const ::std::string &devName);
   ~IbCtx();
 
   IbQp *createQp(int maxCqSize, int maxCqPollNum, int maxSendWr, int maxRecvWr,
                  int maxWrPerSend, int port = -1);
-  const IbMr *registerMr(void *buff, std::size_t size);
+  const IbMr *registerMr(void *buff, size_t size);
 
  private:
   bool isPortUsable(int port) const;
   int getAnyActivePort() const;
 
-  const std::string devName;
+  const ::std::string devName;
   ibv_context *ctx;
   ibv_pd *pd;
-  std::list<std::unique_ptr<IbQp>> qps;
-  std::list<std::unique_ptr<IbMr>> mrs;
+  ::std::list<::std::unique_ptr<IbQp>> qps;
+  ::std::list<::std::unique_ptr<IbMr>> mrs;
 };
 
 }  // namespace pccl

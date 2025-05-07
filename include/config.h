@@ -7,38 +7,58 @@
 #include <string>
 
 namespace pccl {
-constexpr uint64_t DEFAULT_KERNEL_THREAD_NUM = 128;
-constexpr uint64_t DEFAULT_FIFO_SIZE = DEFAULT_KERNEL_THREAD_NUM;
 
-// ib
-constexpr int DefaultMaxCqSize = 1024;
-constexpr int DefaultMaxCqPollNum = 1;
-constexpr int DefaultMaxSendWr = 8192;
-constexpr int DefaultMaxWrPerSend = 64;
+struct Config {
+  // kernel
+  static uint64_t DEFAULT_KERNEL_THREAD_NUM;
+  static uint64_t DEFAULT_PROXY_THREAD_NUM;
+  static uint64_t DEFAULT_MEMORY_THREAD_NUM;
+  static uint64_t DEFAULT_FIFO_SIZE;
+  static uint64_t DEFAULT_MAX_THREAD_BLOCK_NUM;
+  static uint64_t DEFAULT_NUM_SYNCER;
+  static int ProxyStopCheckPeriod;
+  static int ProxyFlushPeriod;
 
-// ether
-constexpr int MaxNumIfaces = 16;
-constexpr int MaxIfaceNameLen = 16;
-constexpr int MaxLenSocketName = (NI_MAXHOST + NI_MAXSERV + 1);
-constexpr uint64_t MSCCLPP_SOCKET_MAGIC = 0x564ab9f2fc4b9d6cULL;
+  // channel
+  static int MAX_CHANNEL;
+  static int MAX_CHANNEL_PER_OPERATION;
+  constexpr static int MAX_OPERATION_PER_THREADBLOCK = 64;
+  static int MAX_LIB_BUFFER;
+  static int MAX_LIB_BUFFER_SIZE;
+  static int MAX_DEVICE_BUFFER;
+  static int MAX_DEVICE_BUFFER_SIZE;
+  static int MAX_HOST_BUFFER;
+  static int MAX_HOST_BUFFER_SIZE;
+
+  // ib
+  static int DefaultMaxCqSize;
+  static int DefaultMaxCqPollNum;
+  static int DefaultMaxSendWr;
+  static int DefaultMaxWrPerSend;
+
+  // ether
+  static int MaxDataPacketSize;
+  static int MaxControlPacketSize;
+  static uint64_t MSCCLPP_SOCKET_MAGIC;
+};
 
 struct env {
   const int rank;
   const int localRank;
   const int worldSize;
-  const ::std::string hostId;
   const ::std::string socketFamily;
-  const ::std::string socketIface;
+  const ::std::string socketAddr;
+  const ::std::string socketPort;
   const ::std::string ibDevice0;
   const ::std::string ibDevice1;
   const ::std::string ibPort0;
   const ::std::string ibPort1;
-  const ::std::string executionPlanDir;
   const ::std::string netConfAddr;
+  const ::std::string netConfPort;
+  const ::std::string netConfModel;
+  const ::std::string profileDir;
 };
 
 ::std::shared_ptr<env> getEnv();
-
-#define PCCL_API __attribute__((visibility("default")))
 
 }  // namespace pccl
