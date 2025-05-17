@@ -32,13 +32,26 @@ INCLUDE_DIRS = [
 
 CSRCS = [
     "src/python.cc",
-    "src/component/device.cc",
-    "src/component/fifo.cc",
+    "src/device.cc",
+    "src/config.cc",
+    "src/runtime.cc",
+    "src/utils.cc",
+    "src/component/endpoint.cc",
+    "src/component/operator.cc",
+    "src/component/profile.cc",
+    "src/component/proxy.cc",
     "src/plugin/ib.cc",
-    "src/plugin/ether.cc",
+    "src/plugin/sock.cc",
 ]
 
-CUSRCS = []
+CUSRCS = [
+    "src/cuda/reduce_kernel.cu",
+    "src/cuda/kernel.cu",
+    "src/cuda/packet.cu",
+    "src/cuda/connection_context.cu",
+    "src/cuda/connection.cu",
+    "src/cuda/registered_memory.cu",
+]
 
 if USE_CUDA:
     assert CUDA_VERSION >= "12.4", "CUDA 12.4 or higher is required"

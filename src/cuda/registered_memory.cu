@@ -76,6 +76,36 @@ RegisteredMemory::Impl::Impl(void *data, size_t size, TransportFlags transports,
   }
 }
 
+PCCL_API RegisteredMemory::RegisteredMemory(int global_buffer_id) {
+  TransportFlags transports;
+  auto env = getEnv();
+  if (!env->ibDevice0.empty()) {
+    transports.set(static_cast<size_t>(Transport::IB0));
+  }
+  if (!env->ibDevice1.empty()) {
+    transports.set(static_cast<size_t>(Transport::IB1));
+  }
+  if (!env->socketAddr.empty()) {
+    transports.set(static_cast<size_t>(Transport::Ethernet));
+  }
+  transports.set(static_cast<size_t>(Transport::CudaIpc));
+#if defined(NVLS_SUPPORT)
+  transports.set(static_cast<size_t>(Transport::NVLS));
+#endif
+  if (global_buffer_id < Config::MAX_LIB_BUFFER) {
+    auto buffer = GpuBuffer<char>(Config::MAX_LIB_BUFFER_SIZE, true);
+    pimpl_ = std::make_shared<Impl>(buffer.data(), Config::MAX_LIB_BUFFER_SIZE, transports,
+                                    *contextImpl);
+  } else if (global_buffer_id < Config::MAX_LIB_BUFFER + Config::MAX_DEVICE_BUFFER) {
+    auto buffer = GpuBuffer<char>(Config::MAX_DEVICE_BUFFER_SIZE, false);
+  } else if (global_buffer_id <
+             Config::MAX_LIB_BUFFER + Config::MAX_DEVICE_BUFFER + Config::MAX_HOST_BUFFER) {
+    auto buffer = GpuBuffer<char>(Config::MAX_HOST_BUFFER_SIZE, true);
+  } else {
+    throw std::runtime_error("Invalid global buffer id");
+  }
+}
+
 PCCL_API RegisteredMemory::RegisteredMemory(std::shared_ptr<Impl> pimpl) : pimpl_(pimpl) {}
 
 PCCL_API RegisteredMemory::~RegisteredMemory() = default;

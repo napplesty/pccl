@@ -1,15 +1,73 @@
-#include "component/proxy.h"
+#include "cuda/proxy.h"
 
+#include <atomic>
 #include <functional>
 #include <memory>
 #include <thread>
 
 #include "component/logging.h"
 #include "config.h"
+#include "device.h"
 #include "runtime.h"
 #include "utils.h"
 
 namespace pccl {
+
+struct Fifo::Impl {
+  UniqueGpuHostPtr<ProxyTrigger> triggers;
+  UniqueGpuPtr<uint64_t> head;
+  UniqueGpuPtr<uint64_t> tailReplica;
+  const int size;
+  uint64_t hostTail;
+
+  // for transferring fifo tail
+  CudaStreamWithFlags stream;
+
+  Impl(int size)
+      : triggers(gpuCallocHostUnique<ProxyTrigger>(size)),
+        head(gpuCallocUnique<uint64_t>()),
+        tailReplica(gpuCallocUnique<uint64_t>()),
+        size(size),
+        hostTail(0),
+        stream(cudaStreamNonBlocking) {}
+};
+
+PCCL_API Fifo::Fifo(int size) : pimpl(::std::make_unique<Impl>(size)) {}
+PCCL_API Fifo::~Fifo() = default;
+
+PCCL_API ProxyTrigger Fifo::poll() {
+  ProxyTrigger trigger;
+  ProxyTrigger* ptr = pimpl->triggers.get() + pimpl->hostTail % pimpl->size;
+  trigger.fst = atomicLoad(&ptr->fst, memoryOrderRelaxed);
+  trigger.snd = ptr->snd;
+  return trigger;
+}
+
+PCCL_API void Fifo::pop() {
+  atomicStore(&(pimpl->triggers.get()[pimpl->hostTail % pimpl->size].fst), uint64_t{0},
+              memoryOrderRelease);
+  (pimpl->hostTail)++;
+}
+
+PCCL_API void Fifo::flushTail(bool sync) {
+  AvoidCudaGraphCaptureGuard cgcGuard;
+  CUDACHECK(cudaMemcpyAsync(pimpl->tailReplica.get(), &pimpl->hostTail, sizeof(uint64_t),
+                            cudaMemcpyHostToDevice, pimpl->stream));
+  if (sync) {
+    CUDACHECK(cudaStreamSynchronize(pimpl->stream));
+  }
+}
+
+PCCL_API int Fifo::size() const { return pimpl->size; }
+
+PCCL_API FifoDeviceHandle Fifo::deviceHandle() {
+  FifoDeviceHandle deviceHandle;
+  deviceHandle.triggers = pimpl->triggers.get();
+  deviceHandle.head = pimpl->head.get();
+  deviceHandle.tailReplica = pimpl->tailReplica.get();
+  deviceHandle.size = pimpl->size;
+  return deviceHandle;
+}
 
 struct Proxy::Impl {
   ProxyHandler handler;
@@ -17,8 +75,7 @@ struct Proxy::Impl {
   ::std::thread service;
   ::std::atomic<bool> running;
 
-  Impl(ProxyHandler handler, size_t fifoSize)
-      : handler(handler), fifo(fifoSize), running(false) {}
+  Impl(ProxyHandler handler, size_t fifoSize) : handler(handler), fifo(fifoSize), running(false) {}
 };
 
 PCCL_API Proxy::Proxy(ProxyHandler handler, size_t fifoSize) {

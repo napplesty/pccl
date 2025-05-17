@@ -5,6 +5,11 @@
 
 namespace pccl {
 
+struct Channels {
+  DeviceHandle<MemoryChannel> memory_channels[Config::MAX_CHANNEL];
+  DeviceHandle<PortChannel> port_channels[Config::MAX_CHANNEL];
+};
+
 struct Operation {
   OperationType type;
   ChannelType channelType;
@@ -12,9 +17,11 @@ struct Operation {
   uint8_t nOutputs;
 
   union {
-    uint8_t *inputBufferIds;
-    uint8_t *outputBufferIds;
-    TransportFlags *transportFlags;
+    uint8_t inputChannelIndexes[Config::MAX_CHANNEL_PER_OPERATION];
+  };
+
+  union {
+    uint8_t outputChannelIndexes[Config::MAX_CHANNEL_PER_OPERATION];
   };
 
   union {
@@ -34,10 +41,10 @@ struct Operation {
 };
 
 struct __attribute__((aligned(16))) DeviceExecutionPlan {
-  uint8_t nMemoryChannels;                              // 1 bytes
-  uint8_t nPortChannels;                                // 1 bytes
-  uint32_t nOperations;                                 // 4 bytes
-  Operation operations[MAX_OPERATION_PER_THREADBLOCK];  // 64 * 100 = 6400 bytes
+  uint8_t nMemoryChannels;                                      // 1 bytes
+  uint8_t nPortChannels;                                        // 1 bytes
+  uint16_t nOperations;                                         // 2 bytes
+  Operation operations[Config::MAX_OPERATION_PER_THREADBLOCK];  // 64 * 100 = 6400 bytes
 };
 
 }  // namespace pccl

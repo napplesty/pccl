@@ -46,10 +46,8 @@ constexpr auto cudaIpcMemLazyEnablePeerAccess = hipIpcMemLazyEnablePeerAccess;
 
 constexpr auto CU_MEM_ALLOCATION_TYPE_PINNED = hipMemAllocationTypePinned;
 constexpr auto CU_MEM_LOCATION_TYPE_DEVICE = hipMemLocationTypeDevice;
-constexpr auto CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR =
-    hipMemHandleTypePosixFileDescriptor;
-constexpr auto CU_MEM_ACCESS_FLAGS_PROT_READWRITE =
-    hipMemAccessFlagsProtReadWrite;
+constexpr auto CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR = hipMemHandleTypePosixFileDescriptor;
+constexpr auto CU_MEM_ACCESS_FLAGS_PROT_READWRITE = hipMemAccessFlagsProtReadWrite;
 
 #ifndef CUDA_SUCCESS
 #define CUDA_SUCCESS hipSuccess
@@ -83,8 +81,7 @@ constexpr auto CU_MEM_ACCESS_FLAGS_PROT_READWRITE =
 #define cudaGraphLaunch(...) hipGraphLaunch(__VA_ARGS__)
 #define cudaGraphDestroy(...) hipGraphDestroy(__VA_ARGS__)
 #define cudaGraphExecDestroy(...) hipGraphExecDestroy(__VA_ARGS__)
-#define cudaThreadExchangeStreamCaptureMode(...) \
-  hipThreadExchangeStreamCaptureMode(__VA_ARGS__)
+#define cudaThreadExchangeStreamCaptureMode(...) hipThreadExchangeStreamCaptureMode(__VA_ARGS__)
 #define cudaIpcGetMemHandle(...) hipIpcGetMemHandle(__VA_ARGS__)
 #define cudaIpcOpenMemHandle(...) hipIpcOpenMemHandle(__VA_ARGS__)
 #define cudaIPCCL_CUDAoseMemHandle(...) hipIPCCL_CUDAoseMemHandle(__VA_ARGS__)
@@ -98,12 +95,9 @@ constexpr auto CU_MEM_ACCESS_FLAGS_PROT_READWRITE =
 #define cuMemSetAccess(...) hipMemSetAccess(__VA_ARGS__)
 #define cuMemMap(...) hipMemMap(__VA_ARGS__)
 #define cuMemUnmap(...) hipMemUnmap(__VA_ARGS__)
-#define cuMemRetainAllocationHandle(...) \
-  hipMemRetainAllocationHandle(__VA_ARGS__)
-#define cuMemExportToShareableHandle(...) \
-  hipMemExportToShareableHandle(__VA_ARGS__)
-#define cuMemImportFromShareableHandle(...) \
-  hipMemImportFromShareableHandle(__VA_ARGS__)
+#define cuMemRetainAllocationHandle(...) hipMemRetainAllocationHandle(__VA_ARGS__)
+#define cuMemExportToShareableHandle(...) hipMemExportToShareableHandle(__VA_ARGS__)
+#define cuMemImportFromShareableHandle(...) hipMemImportFromShareableHandle(__VA_ARGS__)
 
 #define __syncshm() asm volatile("s_waitcnt lgkmcnt(0) \n s_barrier");
 
@@ -121,45 +115,13 @@ PCCL_CUDA_HOST_DEVICE_INLINE T atomicLoad(const T *ptr, int memoryOrder) {
 }
 
 template <typename T>
-PCCL_CUDA_HOST_DEVICE_INLINE void atomicStore(T *ptr, const T &val,
-                                              int memoryOrder) {
+PCCL_CUDA_HOST_DEVICE_INLINE void atomicStore(T *ptr, const T &val, int memoryOrder) {
   __atomic_store_n(ptr, val, memoryOrder);
 }
 
 template <typename T>
-PCCL_CUDA_HOST_DEVICE_INLINE T atomicFetchAdd(T *ptr, const T &val,
-                                              int memoryOrder) {
+PCCL_CUDA_HOST_DEVICE_INLINE T atomicFetchAdd(T *ptr, const T &val, int memoryOrder) {
   return __atomic_fetch_add(ptr, val, memoryOrder);
-}
-
-template <typename T>
-PCCL_CUDA_HOST_DEVICE_INLINE bool atomicCompareExchangeStrong(
-    T *ptr, T &expected, const T &desired, int success_order = __ATOMIC_SEQ_CST,
-    int failure_order = __ATOMIC_SEQ_CST) {
-  return __atomic_compare_exchange_n(ptr, &expected, desired, false,
-                                     success_order, failure_order);
-}
-
-template <typename T>
-PCCL_CUDA_HOST_DEVICE_INLINE bool atomicCompareExchangeWeak(
-    T *ptr, T &expected, const T &desired, int success_order = __ATOMIC_SEQ_CST,
-    int failure_order = __ATOMIC_SEQ_CST) {
-  return __atomic_compare_exchange_n(ptr, &expected, desired, true,
-                                     success_order, failure_order);
-}
-
-template <typename T>
-PCCL_CUDA_HOST_DEVICE_INLINE T
-atomicIncrease(T *ptr, const T &val, int memoryOrder = __ATOMIC_SEQ_CST) {
-  T old =
-      atomicLoad(ptr, memoryOrderRelaxed);  // Use relaxed for the initial load
-  while (true) {
-    T desired = (old >= val) ? static_cast<T>(0) : (old + 1);
-    if (atomicCompareExchangeWeak(ptr, old, desired, memoryOrder,
-                                  memoryOrderRelaxed)) {
-      return old;
-    }
-  }
 }
 
 #include <hip/hip_bf16.h>
@@ -171,10 +133,8 @@ using __float162 = __half2;
 
 }  // namespace pccl
 
-extern "C" __device__ void __assert_fail(const char *__assertion,
-                                         const char *__file,
-                                         unsigned int __line,
-                                         const char *__function);
+extern "C" __device__ void __assert_fail(const char *__assertion, const char *__file,
+                                         unsigned int __line, const char *__function);
 
 #elif defined(USE_CUDA)
 
@@ -193,8 +153,7 @@ constexpr cuda::memory_order memoryOrderSeqCst = cuda::memory_order_seq_cst;
 namespace pccl {
 
 template <typename T>
-PCCL_CUDA_HOST_DEVICE_INLINE T atomicLoad(T *ptr,
-                                          cuda::memory_order memoryOrder) {
+PCCL_CUDA_HOST_DEVICE_INLINE T atomicLoad(T *ptr, cuda::memory_order memoryOrder) {
   return cuda::atomic_ref<T, cuda::thread_scope_system>{*ptr}.load(memoryOrder);
 }
 
@@ -207,43 +166,7 @@ PCCL_CUDA_HOST_DEVICE_INLINE void atomicStore(T *ptr, const T &val,
 template <typename T>
 PCCL_CUDA_HOST_DEVICE_INLINE T atomicFetchAdd(T *ptr, const T &val,
                                               cuda::memory_order memoryOrder) {
-  return cuda::atomic_ref<T, cuda::thread_scope_system>{*ptr}.fetch_add(
-      val, memoryOrder);
-}
-
-template <typename T>
-PCCL_CUDA_HOST_DEVICE_INLINE bool atomicCompareExchangeStrong(
-    T *ptr, T &expected, const T &desired,
-    cuda::memory_order success_order = cuda::memory_order_seq_cst,
-    cuda::memory_order failure_order = cuda::memory_order_seq_cst) {
-  cuda::atomic_ref<T, cuda::thread_scope_system> atomic_obj(*ptr);
-  return atomic_obj.compare_exchange_strong(expected, desired, success_order,
-                                            failure_order);
-}
-
-template <typename T>
-PCCL_CUDA_HOST_DEVICE_INLINE bool atomicCompareExchangeWeak(
-    T *ptr, T &expected, const T &desired,
-    cuda::memory_order success_order = cuda::memory_order_seq_cst,
-    cuda::memory_order failure_order = cuda::memory_order_seq_cst) {
-  cuda::atomic_ref<T, cuda::thread_scope_system> atomic_obj(*ptr);
-  return atomic_obj.compare_exchange_weak(expected, desired, success_order,
-                                          failure_order);
-}
-
-template <typename T>
-PCCL_CUDA_HOST_DEVICE_INLINE T
-atomicIncrease(T *ptr, const T &val,
-               cuda::memory_order memoryOrder = cuda::memory_order_seq_cst) {
-  T old = atomicLoad(
-      ptr, cuda::memory_order_relaxed);  // Use relaxed for the initial load
-  while (true) {
-    T desired = (old >= val) ? static_cast<T>(0) : (old + 1);
-    if (atomicCompareExchangeWeak(ptr, old, desired, memoryOrder,
-                                  cuda::memory_order_relaxed)) {
-      return old;
-    }
-  }
+  return cuda::atomic_ref<T, cuda::thread_scope_system>{*ptr}.fetch_add(val, memoryOrder);
 }
 
 #include <cuda_bf16.h>
@@ -254,12 +177,12 @@ using __bfloat16 = __nv_bfloat16;
 using __bfloat162 = __nv_bfloat162;
 using __float16 = __nv_half;
 using __float162 = __nv_half2;
-// using __float8_e4m3 = __nv_fp8_e4m3;
-// using __float8_e5m2 = __nv_fp8_e5m2;
-// using __float8_e4m32 = __nv_fp8x2_e4m3;
-// using __float8_e5m22 = __nv_fp8x2_e5m2;
-// using __float8_e4m34 = __nv_fp8x4_e4m3;
-// using __float8_e5m24 = __nv_fp8x4_e5m2;
+using __float8_e4m3 = __nv_fp8_e4m3;
+using __float8_e5m2 = __nv_fp8_e5m2;
+using __float8_e4m32 = __nv_fp8x2_e4m3;
+using __float8_e5m22 = __nv_fp8x2_e5m2;
+using __float8_e4m34 = __nv_fp8x4_e4m3;
+using __float8_e5m24 = __nv_fp8x4_e5m2;
 
 #define NVLS_SUPPORT
 
@@ -302,22 +225,22 @@ using __float162 = __nv_half2;
 
 #if defined(PCCL_CUDA_DEVICE_COMPILE)
 
-#define CUDACHECK(cmd)                                                         \
-  do {                                                                         \
-    cudaError_t err = cmd;                                                     \
-    if (err != cudaSuccess) {                                                  \
-      throw ::std::runtime_error(::std::string("Call to " #cmd " failed. ") +  \
-                                 __FILE__ + ":" + ::std::to_string(__LINE__)); \
-    }                                                                          \
+#define CUDACHECK(cmd)                                                                         \
+  do {                                                                                         \
+    cudaError_t err = cmd;                                                                     \
+    if (err != cudaSuccess) {                                                                  \
+      throw ::std::runtime_error(::std::string("Call to " #cmd " failed. ") + __FILE__ + ":" + \
+                                 ::std::to_string(__LINE__));                                  \
+    }                                                                                          \
   } while (false)
 
-#define CUCHECK(cmd)                                                           \
-  do {                                                                         \
-    CUresult err = cmd;                                                        \
-    if (err != CUDA_SUCCESS) {                                                 \
-      throw ::std::runtime_error(::std::string("Call to " #cmd " failed. ") +  \
-                                 __FILE__ + ":" + ::std::to_string(__LINE__)); \
-    }                                                                          \
+#define CUCHECK(cmd)                                                                           \
+  do {                                                                                         \
+    CUresult err = cmd;                                                                        \
+    if (err != CUDA_SUCCESS) {                                                                 \
+      throw ::std::runtime_error(::std::string("Call to " #cmd " failed. ") + __FILE__ + ":" + \
+                                 ::std::to_string(__LINE__));                                  \
+    }                                                                                          \
   } while (false)
 
 namespace pccl {
@@ -345,11 +268,9 @@ void *gpuCalloc(size_t size);
 void *gpuCallocHost(size_t size);
 void gpuFree(void *ptr);
 void gpuFreeHost(void *ptr);
-void gpuMemcpy(void *dst, const void *src, size_t size,
-               cudaMemcpyKind kind = cudaMemcpyDefault);
+void gpuMemcpy(void *dst, const void *src, size_t size, cudaMemcpyKind kind = cudaMemcpyDefault);
 void gpuMemcpyAsync(void *dst, const void *src, size_t size,
-                    cudaMemcpyKind kind = cudaMemcpyDefault,
-                    cudaStream_t stream = 0);
+                    cudaMemcpyKind kind = cudaMemcpyDefault, cudaStream_t stream = 0);
 
 #if defined(USE_HIP)
 void *gpuCallocUncached(size_t bytes);
@@ -359,13 +280,11 @@ void *gpuCallocPhysical(size_t bytes, size_t gran = 0, size_t align = 0);
 void gpuFreePhysical(void *ptr);
 #endif
 
-template <class T, class Deleter, class Memory, typename Alloc,
-          typename... Args>
+template <class T, class Deleter, class Memory, typename Alloc, typename... Args>
 Memory safeAlloc(Alloc alloc, size_t nelems, Args &&...args) {
   T *ptr = nullptr;
   try {
-    ptr = reinterpret_cast<T *>(
-        alloc(nelems * sizeof(T), ::std::forward<Args>(args)...));
+    ptr = reinterpret_cast<T *>(alloc(nelems * sizeof(T), ::std::forward<Args>(args)...));
   } catch (...) {
     if (ptr) {
       Deleter()(ptr);
@@ -403,28 +322,24 @@ auto gpuCallocUnique(size_t nelems = 1) {
 
 template <class T>
 auto gpuCallocHostShared(size_t nelems = 1) {
-  return safeAlloc<T, GpuHostDeleter<T>, ::std::shared_ptr<T>>(gpuCallocHost,
-                                                               nelems);
+  return safeAlloc<T, GpuHostDeleter<T>, ::std::shared_ptr<T>>(gpuCallocHost, nelems);
 }
 
 template <class T>
 auto gpuCallocHostUnique(size_t nelems = 1) {
-  return safeAlloc<T, GpuHostDeleter<T>, UniqueGpuHostPtr<T>>(gpuCallocHost,
-                                                              nelems);
+  return safeAlloc<T, GpuHostDeleter<T>, UniqueGpuHostPtr<T>>(gpuCallocHost, nelems);
 }
 
 #if defined(USE_HIP)
 
 template <class T>
 auto gpuCallocUncachedShared(size_t nelems = 1) {
-  return safeAlloc<T, GpuDeleter<T>, ::std::shared_ptr<T>>(gpuCallocUncached,
-                                                           nelems);
+  return safeAlloc<T, GpuDeleter<T>, ::std::shared_ptr<T>>(gpuCallocUncached, nelems);
 }
 
 template <class T>
 auto gpuCallocUncachedUnique(size_t nelems = 1) {
-  return safeAlloc<T, GpuDeleter<T>, UniqueGpuPtr<T>>(gpuCallocUncached,
-                                                      nelems);
+  return safeAlloc<T, GpuDeleter<T>, UniqueGpuPtr<T>>(gpuCallocUncached, nelems);
 }
 
 #elif defined(NVLS_SUPPORT)
@@ -438,21 +353,18 @@ template <class T>
 using UniqueGpuPhysicalPtr = ::std::unique_ptr<T, GpuPhysicalDeleter<T>>;
 
 template <class T>
-auto gpuCallocPhysicalShared(size_t nelems = 1, size_t gran = 0,
-                             size_t align = 0) {
-  return safeAlloc<T, GpuPhysicalDeleter<T>, ::std::shared_ptr<T>>(
-      gpuCallocPhysical, nelems, gran, align);
+auto gpuCallocPhysicalShared(size_t nelems = 1, size_t gran = 0, size_t align = 0) {
+  return safeAlloc<T, GpuPhysicalDeleter<T>, ::std::shared_ptr<T>>(gpuCallocPhysical, nelems, gran,
+                                                                   align);
 }
 
 template <class T>
-auto gpuCallocPhysicalUnique(size_t nelems = 1, size_t gran = 0,
-                             size_t align = 0) {
-  return safeAlloc<T, GpuPhysicalDeleter<T>, UniqueGpuPhysicalPtr<T>>(
-      gpuCallocPhysical, nelems, gran, align);
+auto gpuCallocPhysicalUnique(size_t nelems = 1, size_t gran = 0, size_t align = 0) {
+  return safeAlloc<T, GpuPhysicalDeleter<T>, UniqueGpuPhysicalPtr<T>>(gpuCallocPhysical, nelems,
+                                                                      gran, align);
 }
 
-size_t getMulticastGranularity(size_t size,
-                               CUmulticastGranularity_flags granFlag);
+size_t getMulticastGranularity(size_t size, CUmulticastGranularity_flags granFlag);
 
 #endif
 
@@ -463,8 +375,7 @@ void gpuMemcpyAsync(T *dst, const T *src, size_t nelems, cudaStream_t stream,
 }
 
 template <class T = char>
-void gpuMemcpy(T *dst, const T *src, size_t nelems,
-               cudaMemcpyKind kind = cudaMemcpyDefault) {
+void gpuMemcpy(T *dst, const T *src, size_t nelems, cudaMemcpyKind kind = cudaMemcpyDefault) {
   gpuMemcpy(dst, src, nelems * sizeof(T), kind);
 }
 
@@ -474,8 +385,7 @@ bool isCuMemMapAllocated([[maybe_unused]] void *ptr);
 template <class T = char>
 class GpuBuffer {
  public:
-  GpuBuffer(size_t nelems, bool host_memory = false)
-      : host_memory_(host_memory), nelems_(nelems) {
+  GpuBuffer(size_t nelems, bool host_memory = false) : host_memory_(host_memory), nelems_(nelems) {
     if (nelems == 0) {
       bytes_ = 0;
       return;
@@ -487,10 +397,9 @@ class GpuBuffer {
     }
 #if defined(NVLS_SUPPORT)
     if (isNvlsSupported()) {
-      size_t gran = getMulticastGranularity(
-          nelems * sizeof(T), CU_MULTICAST_GRANULARITY_RECOMMENDED);
-      bytes_ =
-          (nelems * sizeof(T) + gran - 1) / gran * gran / sizeof(T) * sizeof(T);
+      size_t gran =
+          getMulticastGranularity(nelems * sizeof(T), CU_MULTICAST_GRANULARITY_RECOMMENDED);
+      bytes_ = (nelems * sizeof(T) + gran - 1) / gran * gran / sizeof(T) * sizeof(T);
       memory_ = gpuCallocPhysicalShared<T>(nelems, gran);
       return;
     }
@@ -517,6 +426,8 @@ class GpuBuffer {
   int deviceId_;
   ::std::shared_ptr<T> memory_;
 };
+
+GpuBuffer<char> &getGlobalBuffers(int global_buffer_id);
 
 }  // namespace pccl
 #endif

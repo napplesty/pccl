@@ -1,5 +1,8 @@
 #pragma once
 
+#include <netinet/in.h>
+#include <sys/socket.h>
+
 #include <bitset>
 #include <cstdint>
 #include <memory>
@@ -51,9 +54,9 @@ enum class ReduceOpType : int {
 enum class Transport : int {
   Unknown,
   CudaIpc,
-  IB0,
-  IB1,
+  IB,
   Ethernet,
+  NVLS,
   TransportEnd,
 };
 
@@ -71,7 +74,8 @@ enum class OperationType : int {
   READ_REDUCE,
   READ_REDUCE_WRITE,
   MULTI_READ_REDUCE_STORE,
-  NET_CONFIGURE,
+  NETCONF,
+  CHANNEL_FILP,
   OperationTypeEnd,
 };
 
@@ -81,8 +85,7 @@ enum class PacketType {
   PacketTypeEnd,
 };
 
-const ::std::string TransportNames[] = {"UNK", "IPC",     "IB0", "IB1",
-                                        "ETH", "Netconf", "NUM"};
+const ::std::string TransportNames[] = {"UNK", "CUDA_IPC", "IB", "ETH", "NUM"};
 
 namespace detail {
 
@@ -113,9 +116,7 @@ class TransportFlags : private detail::TransportFlagsBase {
   bool operator==(TransportFlags other) const;
   bool operator!=(TransportFlags other) const;
   detail::TransportFlagsBase toBitset() const;
-  void set(size_t pos, bool value = true) {
-    detail::TransportFlagsBase::set(pos, value);
-  }
+  void set(size_t pos, bool value = true) { detail::TransportFlagsBase::set(pos, value); }
   bool test(size_t pos) const { return detail::TransportFlagsBase::test(pos); }
 
  private:
@@ -132,14 +133,14 @@ inline TransportFlags operator^(Transport transport1, Transport transport2) {
   return TransportFlags(transport1) ^ transport2;
 }
 
-class Connection;
-
 class RegisteredMemory {
  public:
-  RegisteredMemory(int global_buffer_id);
+  RegisteredMemory(uint64_t bufferOffset, bool isHostMemory);
   ~RegisteredMemory();
+  int rankOf() const;
   void* data() const;
-  void* originalDataPtr() const;
+  void* hostPtr() const;
+  void* devicePtr() const;
   size_t size();
   TransportFlags transports();
   ::std::vector<char> serialize();
@@ -149,7 +150,7 @@ class RegisteredMemory {
   struct Impl;
   RegisteredMemory(::std::shared_ptr<Impl> pimpl);
   ::std::shared_ptr<Impl> pimpl_;
-  friend class Context;
+  friend class MemoryContext;
   friend class Connection;
 };
 
@@ -157,8 +158,14 @@ class MemoryContext {
  public:
   MemoryContext();
   ~MemoryContext();
-  std::vector<RegisteredMemory> prepareMemoryForOperator(int op_id,
-                                                         int num_chunks);
+  void registerMemory(RegisteredMemory memory);
+  RegisteredMemory getLibMemory();
+  RegisteredMemory allocateWorkspace(size_t size, bool isHostMemory, int tag);
+  RegisteredMemory getRemoteLibMemory(int rank);
+  RegisteredMemory getRemoteWorkspace(int tag, int rank);
+  void freeWorkspace(RegisteredMemory memory);
+
+  ::std::vector<char> serialize();
 
  private:
   struct Impl;
@@ -186,44 +193,30 @@ class Connection {
  public:
   Connection() = default;
   virtual ~Connection() = default;
-  virtual ::std::vector<RegisteredMemory> prepareOperationAndGetGlobalBufferIds(
-      int op_id, int num_chunks, std::vector<RegisteredMemory>& dst_mems) = 0;
-  virtual void write(RegisteredMemory dst, uint64_t dstOffset,
-                     RegisteredMemory src, uint64_t srcOffset,
-                     uint64_t size) = 0;
-  virtual void updateAndSync(RegisteredMemory dst, uint64_t dstOffset,
-                             uint64_t* src, uint64_t newValue) = 0;
-  virtual void flush(int64_t timeoutUsec = 3e7) = 0;
+  virtual void flip() = 0;
+  virtual void write(RegisteredMemory dst, uint64_t dstOffset, RegisteredMemory src,
+                     uint64_t srcOffset, uint64_t size) = 0;
+  virtual void updateAndSync(RegisteredMemory dst, uint64_t dstOffset, RegisteredMemory src,
+                             uint64_t srcOffset, uint64_t size) = 0;
+  virtual void flush(int64_t timeoutUsec = 3e9) = 0;
   virtual Transport transport() = 0;
   virtual Transport remoteTransport() = 0;
-  virtual bool idle() = 0;
+  virtual int remoteRank() = 0;
   virtual bool connected() = 0;
   virtual uint64_t bandwidth() = 0;
   virtual uint64_t latency() = 0;
-  ::std::string getTransportName();
-
- protected:
-  static ::std::shared_ptr<RegisteredMemory::Impl> getImpl(
-      RegisteredMemory& memory);
-  static ::std::shared_ptr<Endpoint::Impl> getImpl(Endpoint& memory);
 };
 
 class ConnectionContext {
  public:
   ConnectionContext();
   ~ConnectionContext();
-  RegisteredMemory getRegisteredMemory(int bufferId);
-  Endpoint createEndpoint(TransportFlags transport);
-  ::std::shared_ptr<Connection> getConnection(Endpoint localEndpoint,
-                                              Endpoint remoteEndpoint);
+  TransportFlags getChannelTypes(::std::shared_ptr<Connection> connection);
+  int remoteRankOf(::std::shared_ptr<Connection> connection);
+  ::std::shared_ptr<Connection> getConnection(Endpoint localEndpoint, Endpoint remoteEndpoint);
   void connect(Endpoint localEndpoint, Endpoint remoteEndpoint);
   void disconnect(Endpoint localEndpoint, Endpoint remoteEndpoint);
   bool isConnected(Endpoint localEndpoint, Endpoint remoteEndpoint);
-
-  ::std::shared_ptr<Connection> getConnection(int localRank, int remoteRank,
-                                              TransportFlags transport);
-  bool isConnected(int localRank, int remoteRank, TransportFlags transport);
-  bool disconnect(int localRank, int remoteRank, TransportFlags transport);
 
  private:
   struct Impl;
@@ -232,18 +225,31 @@ class ConnectionContext {
   friend class Endpoint;
 };
 
-struct NetworkAddress {
-  char ip_address[32];
-  uint16_t port;
-  bool is_ipv6;
+struct NetConfEntry {
+  sa_family_t family;
+  union {
+    struct {
+      uint32_t ip;
+      uint16_t port;
+    } v4;
+    struct {
+      struct in6_addr ip;
+      uint16_t port;
+    } v6;
+  };
+};
+
+struct NetConfConnection {
+  int src, dst;
+  TransportFlags transport;
+  bool connected;
 };
 
 class Device {
  public:
   Device(int id, int rank,
-         ::std::vector<::std::tuple<TransportFlags, NetworkAddress>>
-             endpoint_infos);
-  NetworkAddress getNetworkAddress(TransportFlags transport);
+         ::std::vector<::std::tuple<TransportFlags, NetConfEntry>> endpoint_infos);
+  NetConfEntry getConfEntry(TransportFlags transport);
 
  private:
   struct Impl;
@@ -252,12 +258,10 @@ class Device {
 
 class Switch {
  public:
-  Switch(int id, const ::std::string& name);
-  void configureStart();
-  void configureEnd();
-  void changeRoute(TransportFlags transport, int src, int dst,
-                   const ::std::vector<int>& outPorts);
-  ::std::vector<int> getRoute(TransportFlags transport, int src, int dst);
+  Switch(int id, const ::std::string& name, NetConfEntry network_address);
+  NetConfEntry getConfEntry() const;
+  void command(const ::std::string& command);
+  void commit();
 
  private:
   struct Impl;
@@ -266,61 +270,57 @@ class Switch {
 
 class OpticalSwitch {
  public:
-  OpticalSwitch(int id, const ::std::string& name);
-  void configureStart();
-  void configureEnd();
-  void connectInternalConnect(int internalPort0, int internalPort1);
-  void breakInternalConnect(int internalPort0, int internalPort1);
-  ::std::vector<::std::tuple<int, int>> getInternalConnects();
+  OpticalSwitch(int id, const ::std::string& name, NetConfEntry network_address);
+  NetConfEntry getConfEntry() const;
+  void command(const ::std::string& command);
+  void commit();
 
  private:
   struct Impl;
   ::std::unique_ptr<Impl> pimpl_;
 };
-
-class Communicator;
 
 class Cluster {
  public:
-  Cluster(::std::string& topoFile, NetworkType networkType,
-          ::std::shared_ptr<Communicator> communicator);
-  ::std::vector<char> getConnectableView();
-  void registerRoutePhase(int routePhase, ::std::string& routePhaseFile);
-  void setRoutePhase(int routePhase);
-  void registerTopologyPhase(int topologyPhase,
-                             ::std::string& topologyPhaseFile);
-  void setTopologyPhase(int topologyPhase);
-
-  ::std::vector<char> getDeviceConnectivity(int routePhase, int topologyPhase);
+  Cluster(::std::string& topoFile, NetworkType networkType);
+  NetConfEntry getConfEntry() const;
+  void registerPhase(int phase, ::std::vector<NetConfConnection>& connections);
+  int getPhase() const;
+  void registerPhaseTransform(
+      int prevPhase, int nextPhase,
+      ::std::vector<::std::tuple<NetConfConnection, ::std::string>>& commands);
+  void preCommit(int nextPhase);
+  void commit();
 
  private:
   struct Impl;
   ::std::unique_ptr<Impl> pimpl_;
 };
-
-class Operator;
 
 class Communicator {
  public:
   Communicator();
   ~Communicator();
-  void registerRemoteEndpoint(::std::vector<char>& data, int remoteRank,
-                              int bufferId);
-  ::std::vector<char> getRemoteEndpoint(int rank, int bufferId);
+  ::std::vector<char> serialize();
+  void registerRemoteInfos(::std::vector<char>& data, int remoteRank);
+  ::std::vector<RegisteredMemory> getOperatorSpace(size_t bufferSize, int tag,
+                                                   ::std::vector<int>& ranks);
+  ::std::vector<Connection> getConnections(int tag, ::std::vector<int>& ranks);
+  void switchPhase(int phase);
   ::std::shared_ptr<MemoryContext> memoryContext();
   ::std::shared_ptr<ConnectionContext> connectionContext();
   ::std::shared_ptr<Cluster> cluster();
-  RegisteredMemory buffer(int globalBufferId);
 
- protected:
-  friend class Cluster;
-  void beginClusterPhase(int topologyPhase, int routePhase);
-  void endClusterPhase();
+ private:
+  struct Impl;
+  ::std::unique_ptr<Impl> pimpl_;
+};
 
- protected:
-  friend class Operator;
-  void registerExecution(Operator* op);
-  void unregisterExecution(Operator* op);
+class Capsule {
+ public:
+  Capsule(int id, ::std::string& path);
+  ::std::string name() const;
+  ::std::string collective() const;
 
  private:
   struct Impl;
@@ -335,13 +335,24 @@ class Operator {
 
   bool isInplace() const;
   bool isConfigurable() const;
-  void execute(int rank, void* input, void* output, DataType dtype,
-               size_t inputSize, size_t outputSize, void* stream = nullptr);
+  void execute(int rank, void* input, void* output, DataType dtype, size_t inputSize,
+               size_t outputSize, void* stream = nullptr);
 
  public:
   struct Impl;
   ::std::unique_ptr<Impl> impl_;
 };
+
+template <class T>
+using DeviceHandle = typename T::DeviceHandle;
+
+template <typename T>
+DeviceHandle<::std::remove_reference_t<T>> deviceHandle(T&& t) {
+  return t.deviceHandle();
+}
+
+template <class T>
+using PacketPayload = typename T::Payload;
 
 }  // namespace pccl
 

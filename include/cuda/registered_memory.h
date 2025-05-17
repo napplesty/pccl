@@ -2,13 +2,12 @@
 
 #include "device.h"
 #include "plugin/ib.h"
+#include "plugin/sock.h"
 #include "runtime.h"
 
 namespace pccl {
 
 struct TransportInfo {
-  Transport transport;
-  bool ibLocal;
   union {
     // CUDA IPC
     struct {
@@ -19,6 +18,11 @@ struct TransportInfo {
     struct {
       const IbMr* ibMr;
       IbMrInfo ibMrInfo;
+    };
+    // Sock
+    struct {
+      SockMr* sockMr;
+      SockMrInfo sockMrInfo;
     };
     // Dma
     struct {
@@ -32,6 +36,8 @@ struct TransportInfo {
       size_t offsetFromBase;
     };
   };
+  Transport transport;
+  bool ibLocal;
 };
 
 struct RegisteredMemory::Impl {

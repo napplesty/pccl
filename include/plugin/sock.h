@@ -13,12 +13,7 @@
 
 namespace pccl {
 
-enum class SockOpType : int8_t {
-  RDMA_READ,
-  RDMA_WRITE,
-  RDMA_ATOMIC_ADD,
-  RDMA_WRITE_WITH_IMM
-};
+enum class SockOpType : int8_t { READ, WRITE, ATOMIC_ADD, WRITE_WITH_IMM };
 
 enum class SockStatus : int8_t {
   SUCCESS,
@@ -38,7 +33,6 @@ enum class SocketType : int8_t { QP_SOCKET, ACCEPT_SOCKET };
 
 struct SockMrInfo {
   uint64_t addr;
-  uint32_t id;
 };
 
 class SockMr {
@@ -47,13 +41,13 @@ class SockMr {
 
   SockMrInfo getInfo() const;
   void* getBuff() const;
-  uint32_t getId() const;
+  bool isHost() const;
 
  private:
-  SockMr(void* buff, size_t size, uint32_t id);
+  SockMr(void* buff, size_t size, bool isHostMemory);
   void* buff;
   size_t size;
-  uint32_t id;
+  bool isHostMemory;
   friend class SockCtx;
 };
 
@@ -84,14 +78,12 @@ struct SocketInfo {
     last_active_time_ = std::chrono::steady_clock::now();
   }
 
-  // 移动构造函数
   SocketInfo(SocketInfo&& other) noexcept
       : type(other.type),
         qp(std::move(other.qp)),
         usage_count_(other.usage_count_.load()),
         last_active_time_(other.last_active_time_) {}
 
-  // 移动赋值运算符
   SocketInfo& operator=(SocketInfo&& other) noexcept {
     if (this != &other) {
       type = other.type;
@@ -102,15 +94,15 @@ struct SocketInfo {
     return *this;
   }
 
-  void incrementUsage() {
+  inline void incrementUsage() {
     usage_count_++;
     last_active_time_ = std::chrono::steady_clock::now();
   }
 
-  void resetUsage() { usage_count_ = 0; }
-  int getUsageCount() const { return usage_count_; }
+  inline void resetUsage() { usage_count_ = 0; }
+  inline int getUsageCount() const { return usage_count_; }
 
-  std::chrono::steady_clock::time_point getLastActiveTime() const {
+  inline std::chrono::steady_clock::time_point getLastActiveTime() const {
     return last_active_time_;
   }
 };
@@ -120,24 +112,18 @@ class SockCtx;
 class SockQp {
  public:
   ~SockQp();
-
   SockStatus connect(const SockQpInfo& remote_info);
-  SockStatus stageLoad(const SockMr* mr, const SockMrInfo& info, size_t size,
-                       uint64_t wrId, uint64_t srcOffset, uint64_t dstOffset,
-                       bool signaled);
-  SockStatus stageSend(const SockMr* mr, const SockMrInfo& info, uint32_t size,
-                       uint64_t wrId, uint64_t srcOffset, uint64_t dstOffset,
-                       bool signaled);
-  SockStatus stageAtomicAdd(const SockMr* mr, const SockMrInfo& info,
-                            uint64_t wrId, uint64_t dstOffset, uint64_t addVal,
-                            bool signaled);
-  SockStatus stageSendWithImm(const SockMr* mr, const SockMrInfo& info,
-                              uint32_t size, uint64_t wrId, uint64_t srcOffset,
-                              uint64_t dstOffset, bool signaled,
+  SockStatus stageLoad(const SockMr* mr, const SockMrInfo& info, size_t size, uint64_t wrId,
+                       uint64_t srcOffset, uint64_t dstOffset, bool signaled);
+  SockStatus stageSend(const SockMr* mr, const SockMrInfo& info, uint32_t size, uint64_t wrId,
+                       uint64_t srcOffset, uint64_t dstOffset, bool signaled);
+  SockStatus stageAtomicAdd(const SockMr* mr, const SockMrInfo& info, uint64_t wrId,
+                            uint64_t dstOffset, uint64_t addVal, bool signaled);
+  SockStatus stageSendWithImm(const SockMr* mr, const SockMrInfo& info, uint32_t size,
+                              uint64_t wrId, uint64_t srcOffset, uint64_t dstOffset, bool signaled,
                               unsigned int immData);
   SockStatus postSend();
   int pollCq();
-
   SockQpInfo& getInfo() { return this->info; }
 
  private:
@@ -163,8 +149,8 @@ class SockQp {
     unsigned int imm_data;
   };
 
-  SockQp(SockCtx* ctx, int socket_fd, const std::string& host, int port,
-         int max_cq_size, int max_wr);
+  SockQp(SockCtx* ctx, int socket_fd, const std::string& host, int port, int max_cq_size,
+         int max_wr);
   SockStatus sendRequest(const WrInfo& wr);
   SockStatus handleRequest(const std::vector<char>& request);
   SockStatus handleMessageHeader(const void* header_data);
@@ -187,15 +173,13 @@ class SockQp {
 
   std::vector<char> recv_buffer;
   size_t recv_bytes;
-  std::unordered_map<uint32_t, SockMr*>
-      mr_map;  // Maps remote MR IDs to local MRs
+  std::unordered_map<uint32_t, SockMr*> mr_map;
 
   friend class SockCtx;
 };
 
 struct SocketLfuComparator {
-  bool operator()(const std::pair<int, SocketInfo>& a,
-                  const std::pair<int, SocketInfo>& b) const {
+  bool operator()(const std::pair<int, SocketInfo>& a, const std::pair<int, SocketInfo>& b) const {
     if (a.second.getUsageCount() == b.second.getUsageCount()) {
       return a.second.getLastActiveTime() < b.second.getLastActiveTime();
     }
@@ -224,7 +208,6 @@ struct MessageHeader {
   uint64_t size;
   uint32_t mr_id;
   uint64_t atomic_val;
-  int conn_id;
 };
 
 class SockCtx {
@@ -233,7 +216,7 @@ class SockCtx {
   ~SockCtx();
 
   std::shared_ptr<SockQp> createQp(int max_cq_size, int max_wr);
-  std::shared_ptr<SockMr> registerMr(void* buff, size_t size);
+  std::shared_ptr<SockMr> registerMr(void* buff, size_t size, bool isHostMemory);
   SockStatus sendData(int socket_fd, const void* data, size_t size);
   static std::atomic<uint32_t> next_mr_id;
   static std::atomic<int> next_qp_id;
@@ -248,9 +231,7 @@ class SockCtx {
   void updateSocketMapping(int fd, SockQp* qp);
   void updateSocketUsage(int fd);
 
-  void setMaxConnections(int max_connections) {
-    max_connections_ = max_connections;
-  }
+  void setMaxConnections(int max_connections) { max_connections_ = max_connections; }
   int getConnectionCount() const { return socket_infos.size(); }
 
  private:

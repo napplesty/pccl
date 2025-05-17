@@ -1,44 +1,60 @@
 #include "config.h"
 
+#include <cstdlib>    // For std::getenv
+#include <memory>     // For std::shared_ptr, std::make_shared
+#include <stdexcept>  // For std::invalid_argument, std::out_of_range
+#include <string>     // For std::string, std::stoi
+// #include <iostream> // For potential error logging, uncomment if needed
+
 namespace pccl {
 
-// kernel
-// ThreadBlock execution model [0:32 prologue from input to buffer,
-// 32:64 epilogue from buffer to output,
-// 64:96 proxy handler,
-// 96:DEFAULT_KERNEL_THREAD_NUM, memory handler]
-uint64_t Config::DEFAULT_KERNEL_THREAD_NUM = 256;
-uint64_t Config::DEFAULT_PROXY_THREAD_NUM = 32;
-uint64_t Config::DEFAULT_MEMORY_THREAD_NUM =
-    DEFAULT_KERNEL_THREAD_NUM - DEFAULT_PROXY_THREAD_NUM;
-uint64_t Config::DEFAULT_FIFO_SIZE = Config::DEFAULT_KERNEL_THREAD_NUM;
-uint64_t Config::DEFAULT_MAX_THREAD_BLOCK_NUM = 8;
-uint64_t Config::DEFAULT_NUM_SYNCER = DEFAULT_MAX_THREAD_BLOCK_NUM;
-int Config::ProxyStopCheckPeriod = 8192;
-int Config::ProxyFlushPeriod = 4;
+// Helper function to get environment variable as string.
+// Returns default_value if the environment variable is not set.
+static std::string get_env_var_str(const char* name, const std::string& default_value = "") {
+  const char* value = std::getenv(name);
+  return value ? std::string(value) : default_value;
+}
 
-// channel
-int Config::MAX_CHANNEL = 1024;
-int Config::MAX_CHANNEL_PER_OPERATION = DEFAULT_PROXY_THREAD_NUM;
+// Helper function to get environment variable as int.
+// Returns default_value if the environment variable is not set or if conversion fails.
+static int get_env_var_int(const char* name, int default_value = 0) {
+  const char* value_str = std::getenv(name);
+  if (value_str) {
+    try {
+      return std::stoi(value_str);
+    } catch (const std::invalid_argument& /*e*/) {
+      // Optional: Log error, e.g., std::cerr << "Invalid argument for " << name << ": '" <<
+      // value_str << "'" << std::endl;
+    } catch (const std::out_of_range& /*e*/) {
+      // Optional: Log error, e.g., std::cerr << "Out of range for " << name << ": '" << value_str
+      // << "'" << std::endl;
+    }
+  }
+  return default_value;
+}
 
-// buffer
-int Config::MAX_LIB_BUFFER = 1;
-int Config::MAX_LIB_BUFFER_SIZE = 16 * 1024;
-int Config::MAX_DEVICE_BUFFER = 128;
-int Config::MAX_DEVICE_BUFFER_SIZE = 1 * 1024 * 1024;
-int Config::MAX_HOST_BUFFER = 32;
-int Config::MAX_HOST_BUFFER_SIZE = 1 * 1024 * 1024;
+::std::shared_ptr<env> getEnv() {
+  int rank_val = get_env_var_int("PCCL_RANK", 0);
+  int local_rank_val = get_env_var_int("PCCL_LOCAL_RANK", 0);
+  int world_size_val =
+      get_env_var_int("PCCL_WORLD_SIZE", 1);  // A world size of 1 is a common default.
 
-// ib
-int Config::DefaultMaxCqSize =
-    MAX_OPERATION_PER_THREADBLOCK * DEFAULT_PROXY_THREAD_NUM;
-int Config::DefaultMaxCqPollNum = 1;
-int Config::DefaultMaxSendWr = 2 * DefaultMaxCqSize;
-int Config::DefaultMaxWrPerSend = DEFAULT_PROXY_THREAD_NUM;
+  std::string socket_family_val =
+      get_env_var_str("PCCL_SOCKET_FAMILY", "AF_INET");  // AF_INET is a common default.
+  std::string socket_addr_val = get_env_var_str("PCCL_SOCKET_ADDR");
+  std::string socket_port_val = get_env_var_str("PCCL_SOCKET_PORT");
+  std::string ib_device0_val = get_env_var_str("PCCL_IB_DEVICE0");
+  std::string ib_device1_val = get_env_var_str("PCCL_IB_DEVICE1");
+  std::string ib_port0_val = get_env_var_str("PCCL_IB_PORT0");
+  std::string ib_port1_val = get_env_var_str("PCCL_IB_PORT1");
+  std::string net_conf_addr_val = get_env_var_str("PCCL_NET_CONF_ADDR");
+  std::string net_conf_port_val = get_env_var_str("PCCL_NET_CONF_PORT");
+  std::string net_conf_model_val = get_env_var_str("PCCL_NET_CONF_MODEL");
+  std::string profile_dir_val = get_env_var_str("PCCL_PROFILE_DIR");
 
-// ether
-int Config::MaxDataPacketSize = 5000;
-int Config::MaxControlPacketSize = 128;
-uint64_t Config::MSCCLPP_SOCKET_MAGIC = 0x564ab9f2fc4b9d6cULL;
-
+  return std::make_shared<env>(env{rank_val, local_rank_val, world_size_val, socket_family_val,
+                                   socket_addr_val, socket_port_val, ib_device0_val, ib_device1_val,
+                                   ib_port0_val, ib_port1_val, net_conf_addr_val, net_conf_port_val,
+                                   net_conf_model_val, profile_dir_val});
+}
 }  // namespace pccl

@@ -1,9 +1,10 @@
 #include "device.h"
 
+#include <unordered_map>
+
 namespace pccl {
 
-AvoidCudaGraphCaptureGuard::AvoidCudaGraphCaptureGuard()
-    : mode_(cudaStreamCaptureModeRelaxed) {
+AvoidCudaGraphCaptureGuard::AvoidCudaGraphCaptureGuard() : mode_(cudaStreamCaptureModeRelaxed) {
   CUDACHECK(cudaThreadExchangeStreamCaptureMode(&mode_));
 }
 
@@ -55,8 +56,7 @@ void *gpuCalloc(size_t bytes) {
 void *gpuCallocHost(size_t bytes) {
   AvoidCudaGraphCaptureGuard cgcGuard;
   void *ptr;
-  CUDACHECK(cudaHostAlloc(&ptr, bytes,
-                          cudaHostAllocMapped | cudaHostAllocWriteCombined));
+  CUDACHECK(cudaHostAlloc(&ptr, bytes, cudaHostAllocMapped | cudaHostAllocWriteCombined));
   ::memset(ptr, 0, bytes);
   return ptr;
 }
@@ -76,8 +76,7 @@ void *gpuCallocUncached(size_t bytes) {
   AvoidCudaGraphCaptureGuard cgcGuard;
   void *ptr;
   CudaStreamWithFlags stream(cudaStreamNonBlocking);
-  CUDACHECK(
-      hipExtMallocWithFlags((void **)&ptr, bytes, hipDeviceMallocUncached));
+  CUDACHECK(hipExtMallocWithFlags((void **)&ptr, bytes, hipDeviceMallocUncached));
   CUDACHECK(cudaMemsetAsync(ptr, 0, bytes, stream));
   CUDACHECK(cudaStreamSynchronize(stream));
   return ptr;
@@ -85,8 +84,7 @@ void *gpuCallocUncached(size_t bytes) {
 #endif
 
 #if defined(NVLS_SUPPORT)
-size_t getMulticastGranularity(size_t size,
-                               CUmulticastGranularity_flags granFlag) {
+size_t getMulticastGranularity(size_t size, CUmulticastGranularity_flags granFlag) {
   size_t gran = 0;
   int numDevices = 0;
   CUDACHECK(cudaGetDeviceCount(&numDevices));
@@ -94,9 +92,8 @@ size_t getMulticastGranularity(size_t size,
   CUmulticastObjectProp prop = {};
   prop.size = size;
   prop.numDevices = numDevices;
-  prop.handleTypes =
-      (CUmemAllocationHandleType)(CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR |
-                                  CU_MEM_HANDLE_TYPE_FABRIC);
+  prop.handleTypes = (CUmemAllocationHandleType)(CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR |
+                                                 CU_MEM_HANDLE_TYPE_FABRIC);
   prop.flags = 0;
   CUCHECK(cuMulticastGetGranularity(&gran, &prop, granFlag));
   return gran;
@@ -111,8 +108,7 @@ void *gpuCallocPhysical(size_t bytes, size_t gran, size_t align) {
 
   int requestedHandleTypes = CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR;
   int isFabricSupported;
-  CUCHECK(cuDeviceGetAttribute(&isFabricSupported,
-                               CU_DEVICE_ATTRIBUTE_HANDLE_TYPE_FABRIC_SUPPORTED,
+  CUCHECK(cuDeviceGetAttribute(&isFabricSupported, CU_DEVICE_ATTRIBUTE_HANDLE_TYPE_FABRIC_SUPPORTED,
                                currentDevice));
   if (isFabricSupported) {
     requestedHandleTypes |= CU_MEM_HANDLE_TYPE_FABRIC;
@@ -132,8 +128,7 @@ void *gpuCallocPhysical(size_t bytes, size_t gran, size_t align) {
   size_t nbytes = (bytes + gran - 1) / gran * gran;
   CUresult result = cuMemCreate(&memHandle, nbytes, &prop, 0);
   if (requestedHandleTypes & CU_MEM_HANDLE_TYPE_FABRIC &&
-      (result == CUDA_ERROR_NOT_PERMITTED ||
-       result == CUDA_ERROR_NOT_SUPPORTED)) {
+      (result == CUDA_ERROR_NOT_PERMITTED || result == CUDA_ERROR_NOT_SUPPORTED)) {
     requestedHandleTypes = CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR;
     prop.requestedHandleTypes = (CUmemAllocationHandleType)requestedHandleTypes;
     CUCHECK(cuMemCreate(&memHandle, nbytes, &prop, 0));
@@ -169,8 +164,8 @@ void gpuFreePhysical(void *ptr) {
 }
 #endif
 
-void gpuMemcpyAsync(void *dst, const void *src, size_t bytes,
-                    cudaStream_t stream, cudaMemcpyKind kind) {
+void gpuMemcpyAsync(void *dst, const void *src, size_t bytes, cudaStream_t stream,
+                    cudaMemcpyKind kind) {
   AvoidCudaGraphCaptureGuard cgcGuard;
   CUDACHECK(cudaMemcpyAsync(dst, src, bytes, kind, stream));
 }
@@ -190,8 +185,8 @@ bool isNvlsSupported() {
     int isMulticastSupported;
     CUdevice dev;
     CUCHECK(cuCtxGetDevice(&dev));
-    CUCHECK(cuDeviceGetAttribute(&isMulticastSupported,
-                                 CU_DEVICE_ATTRIBUTE_MULTICAST_SUPPORTED, dev));
+    CUCHECK(
+        cuDeviceGetAttribute(&isMulticastSupported, CU_DEVICE_ATTRIBUTE_MULTICAST_SUPPORTED, dev));
     return isMulticastSupported == 1;
   }
   return result;
@@ -214,6 +209,27 @@ bool isCuMemMapAllocated([[maybe_unused]] void *ptr) {
   }
   return true;
 #endif
+}
+
+GpuBuffer<char> &getGlobalBuffers(int global_buffer_id) {
+  static ::std::unordered_map<int, GpuBuffer<char>> buffers;
+  static ::std::mutex mutex;
+  if (buffers.find(global_buffer_id) == buffers.end()) {
+    ::std::lock_guard<::std::mutex> lock(mutex);
+    if (buffers.find(global_buffer_id) == buffers.end()) {
+      if (global_buffer_id < Config::MAX_LIB_BUFFER_SIZE) {
+        buffers[global_buffer_id] = GpuBuffer<char>(Config::MAX_LIB_BUFFER_SIZE, true);
+      } else if (global_buffer_id < Config::MAX_LIB_BUFFER_SIZE + Config::MAX_DEVICE_BUFFER_SIZE) {
+        buffers[global_buffer_id] = GpuBuffer<char>(Config::MAX_DEVICE_BUFFER_SIZE, false);
+      } else if (global_buffer_id < Config::MAX_LIB_BUFFER_SIZE + Config::MAX_DEVICE_BUFFER_SIZE +
+                                        Config::MAX_HOST_BUFFER) {
+        buffers[global_buffer_id] = GpuBuffer<char>(Config::MAX_HOST_BUFFER_SIZE, true);
+      } else {
+        throw ::std::runtime_error("Invalid global buffer id");
+      }
+    }
+  }
+  return buffers[global_buffer_id];
 }
 
 }  // namespace pccl

@@ -21,21 +21,18 @@ namespace pccl {
 std::atomic<uint32_t> SockCtx::next_mr_id(1);
 std::atomic<int> SockCtx::next_qp_id(1);
 
-SockMr::SockMr(void* buff, size_t size, uint32_t id)
-    : buff(buff), size(size), id(id) {}
+SockMr::SockMr(void* buff, size_t size, bool isHostMemory)
+    : buff(buff), size(size), isHostMemory(isHostMemory) {}
 
 SockMr::~SockMr() {}
 
 SockMrInfo SockMr::getInfo() const {
   SockMrInfo info;
   info.addr = reinterpret_cast<uint64_t>(buff);
-  info.id = id;
   return info;
 }
 
 void* SockMr::getBuff() const { return buff; }
-
-uint32_t SockMr::getId() const { return id; }
 
 static int setNonBlocking(int fd) {
   int flags = fcntl(fd, F_GETFL, 0);
@@ -56,8 +53,8 @@ static int removeFromEpoll(int epoll_fd, int fd) {
   return epoll_ctl(epoll_fd, EPOLL_CTL_DEL, fd, nullptr);
 }
 
-SockQp::SockQp(SockCtx* ctx, int socket_fd, const std::string& host, int port,
-               int max_cq_size, int max_wr)
+SockQp::SockQp(SockCtx* ctx, int socket_fd, const std::string& host, int port, int max_cq_size,
+               int max_wr)
     : ctx(ctx),
       socket_fd(socket_fd),
       connected(false),
@@ -88,15 +85,14 @@ SockStatus SockCtx::sendData(int socket_fd, const void* data, size_t size) {
   ssize_t sent = 0;
   const char* buffer = static_cast<const char*>(data);
 
-  // 设置超时
   int retry_count = 0;
-  const int MAX_RETRIES = 1000;  // 根据需要调整
+  constexpr int MAX_RETRIES = 32;
 
   while (sent < size) {
     ssize_t bytes = send(socket_fd, buffer + sent, size - sent, MSG_NOSIGNAL);
     if (bytes > 0) {
       sent += bytes;
-      retry_count = 0;  // 重置重试计数
+      retry_count = 0;
     } else if (bytes == 0) {
       LOG_ERROR << "Connection closed while sending data";
       return SockStatus::ERROR_SEND_FAILED;
@@ -106,8 +102,7 @@ SockStatus SockCtx::sendData(int socket_fd, const void* data, size_t size) {
       } else if (errno == EAGAIN || errno == EWOULDBLOCK) {
         retry_count++;
         if (retry_count >= MAX_RETRIES) {
-          LOG_ERROR << "Send operation timed out after " << MAX_RETRIES
-                    << " retries";
+          LOG_ERROR << "Send operation timed out after " << MAX_RETRIES << " retries";
           return SockStatus::ERROR_TIMEOUT;
         }
 
@@ -134,31 +129,26 @@ SockCtx::SockCtx(const std::string& host, int port, int max_connections)
     : host(host), port(port), running(true), max_connections_(max_connections) {
   epoll_fd = epoll_create1(0);
   if (epoll_fd < 0) {
-    throw std::runtime_error("Failed to create epoll instance: " +
-                             std::string(strerror(errno)));
+    throw std::runtime_error("Failed to create epoll instance: " + std::string(strerror(errno)));
   }
 
   listen_socket = socket(AF_INET, SOCK_STREAM, 0);
   if (listen_socket < 0) {
     close(epoll_fd);
-    throw std::runtime_error("Failed to create socket: " +
-                             std::string(strerror(errno)));
+    throw std::runtime_error("Failed to create socket: " + std::string(strerror(errno)));
   }
 
   int opt = 1;
-  if (setsockopt(listen_socket, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) <
-      0) {
+  if (setsockopt(listen_socket, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0) {
     close(listen_socket);
     close(epoll_fd);
-    throw std::runtime_error("Failed to set socket options: " +
-                             std::string(strerror(errno)));
+    throw std::runtime_error("Failed to set socket options: " + std::string(strerror(errno)));
   }
 
   if (setNonBlocking(listen_socket) < 0) {
     close(listen_socket);
     close(epoll_fd);
-    throw std::runtime_error("Failed to set non-blocking mode: " +
-                             std::string(strerror(errno)));
+    throw std::runtime_error("Failed to set non-blocking mode: " + std::string(strerror(errno)));
   }
 
   struct sockaddr_in address;
@@ -169,22 +159,19 @@ SockCtx::SockCtx(const std::string& host, int port, int max_connections)
   if (bind(listen_socket, (struct sockaddr*)&address, sizeof(address)) < 0) {
     close(listen_socket);
     close(epoll_fd);
-    throw std::runtime_error("Failed to bind socket: " +
-                             std::string(strerror(errno)));
+    throw std::runtime_error("Failed to bind socket: " + std::string(strerror(errno)));
   }
 
   if (listen(listen_socket, SOMAXCONN) < 0) {
     close(listen_socket);
     close(epoll_fd);
-    throw std::runtime_error("Failed to listen on socket: " +
-                             std::string(strerror(errno)));
+    throw std::runtime_error("Failed to listen on socket: " + std::string(strerror(errno)));
   }
 
   if (addToEpoll(epoll_fd, listen_socket, EPOLLIN) < 0) {
     close(listen_socket);
     close(epoll_fd);
-    throw std::runtime_error("Failed to add socket to epoll: " +
-                             std::string(strerror(errno)));
+    throw std::runtime_error("Failed to add socket to epoll: " + std::string(strerror(errno)));
   }
 
   worker_thread = std::thread(&SockCtx::processEvents, this);
@@ -259,8 +246,7 @@ void SockCtx::updateSocketMapping(int fd, SockQp* qp) {
   std::lock_guard<std::mutex> lock(qps_mutex);
   for (const auto& q : qps) {
     if (q.get() == qp) {
-      socket_infos.insert_or_assign(
-          fd, std::move(SocketInfo(SocketType::QP_SOCKET, q)));
+      socket_infos.insert_or_assign(fd, SocketInfo(SocketType::QP_SOCKET, q));
       qp_id_to_fd[q->getInfo().qpn] = fd;
       return;
     }
@@ -270,48 +256,41 @@ void SockCtx::updateSocketMapping(int fd, SockQp* qp) {
 std::shared_ptr<SockQp> SockCtx::createQp(int max_cq_size, int max_wr) {
   int socket_fd = socket(AF_INET, SOCK_STREAM, 0);
   if (socket_fd < 0) {
-    throw std::runtime_error("Failed to create socket: " +
-                             std::string(strerror(errno)));
+    throw std::runtime_error("Failed to create socket: " + std::string(strerror(errno)));
   }
 
   int flag = 1;
   if (setsockopt(socket_fd, IPPROTO_TCP, TCP_NODELAY, &flag, sizeof(int)) < 0) {
     close(socket_fd);
-    throw std::runtime_error("Failed to set TCP_NODELAY: " +
-                             std::string(strerror(errno)));
+    throw std::runtime_error("Failed to set TCP_NODELAY: " + std::string(strerror(errno)));
   }
 
   if (setNonBlocking(socket_fd) < 0) {
     close(socket_fd);
-    throw std::runtime_error("Failed to set non-blocking mode: " +
-                             std::string(strerror(errno)));
+    throw std::runtime_error("Failed to set non-blocking mode: " + std::string(strerror(errno)));
   }
 
-  qps.push_back(std::make_shared<SockQp>(this, socket_fd, host, port,
-                                         max_cq_size, max_wr));
+  qps.push_back(std::make_shared<SockQp>(this, socket_fd, host, port, max_cq_size, max_wr));
   std::shared_ptr<SockQp> qp = qps.back();
 
   if (addToEpoll(epoll_fd, socket_fd, EPOLLIN) < 0) {
     qps.pop_back();
-    throw std::runtime_error("Failed to add socket to epoll: " +
-                             std::string(strerror(errno)));
+    throw std::runtime_error("Failed to add socket to epoll: " + std::string(strerror(errno)));
   }
 
   std::lock_guard<std::mutex> lock(qps_mutex);
-  socket_infos.insert_or_assign(
-      socket_fd, std::move(SocketInfo(SocketType::QP_SOCKET, qp)));
+  socket_infos.insert_or_assign(socket_fd, SocketInfo(SocketType::QP_SOCKET, qp));
   qp_id_to_fd[qp->getInfo().qpn] = socket_fd;
 
   return qp;
 }
 
-std::shared_ptr<SockMr> SockCtx::registerMr(void* buff, size_t size) {
+std::shared_ptr<SockMr> SockCtx::registerMr(void* buff, size_t size, bool isHostMemory) {
   if (!buff || size == 0) {
     throw std::invalid_argument("Invalid buffer or size");
   }
 
-  uint32_t id = next_mr_id.fetch_add(1);
-  mrs.emplace_back(std::make_shared<SockMr>(buff, size, id));
+  mrs.emplace_back(std::make_shared<SockMr>(buff, size, isHostMemory));
   return mrs.back();
 }
 
@@ -353,8 +332,7 @@ void SockCtx::handleSocketEvent(int fd, uint32_t events) {
                   << (bytes_read == 0 ? "Connection closed" : strerror(errno));
 
         // 根据socket类型处理
-        if (it->second.type == SocketType::QP_SOCKET &&
-            !it->second.qp.expired()) {
+        if (it->second.type == SocketType::QP_SOCKET && !it->second.qp.expired()) {
           // QP socket: 断开连接但不删除QP对象
           auto qp = it->second.qp.lock();
           qp->disconnect();
@@ -379,8 +357,7 @@ void SockCtx::handleSocketEvent(int fd, uint32_t events) {
       qp->handleReceivedData(buffer, bytes_read);
     } else {
       // 普通socket: 可以根据需要处理，例如协议识别
-      LOG_INFO << "Received " << bytes_read
-               << " bytes from non-QP socket: " << fd;
+      LOG_INFO << "Received " << bytes_read << " bytes from non-QP socket: " << fd;
       // 这里可以添加对普通socket数据的处理逻辑
     }
   }
@@ -424,7 +401,6 @@ void SockCtx::closeConnection(int fd) {
   removeFromEpoll(epoll_fd, fd);
 }
 
-// 事件处理循环
 void SockCtx::processEvents() {
   bindToCpu();
   const int MAX_EVENTS = 64;
@@ -455,14 +431,12 @@ void SockCtx::processEvents() {
     }
 
     auto now = std::chrono::steady_clock::now();
-    if (std::chrono::duration_cast<std::chrono::hours>(now - last_reset_time)
-            .count() >= 1) {
+    if (std::chrono::duration_cast<std::chrono::hours>(now - last_reset_time).count() >= 1) {
       resetUsageCounts();
       last_reset_time = now;
     }
 
-    if (std::chrono::duration_cast<std::chrono::seconds>(now - last_manage_time)
-            .count() >= 5) {
+    if (std::chrono::duration_cast<std::chrono::seconds>(now - last_manage_time).count() >= 5) {
       manageConnections();
       last_manage_time = now;
     }
@@ -474,8 +448,7 @@ void SockCtx::acceptConnections() {
   socklen_t client_len = sizeof(client_addr);
 
   while (true) {
-    int client_socket =
-        accept(listen_socket, (struct sockaddr*)&client_addr, &client_len);
+    int client_socket = accept(listen_socket, (struct sockaddr*)&client_addr, &client_len);
     if (client_socket < 0) {
       if (errno == EAGAIN || errno == EWOULDBLOCK) {
         break;
@@ -485,8 +458,7 @@ void SockCtx::acceptConnections() {
     }
 
     int flag = 1;
-    if (setsockopt(client_socket, IPPROTO_TCP, TCP_NODELAY, &flag,
-                   sizeof(int)) < 0) {
+    if (setsockopt(client_socket, IPPROTO_TCP, TCP_NODELAY, &flag, sizeof(int)) < 0) {
       close(client_socket);
       LOG_ERROR << "Failed to set TCP_NODELAY: " << strerror(errno);
       continue;
@@ -509,26 +481,24 @@ void SockCtx::acceptConnections() {
     int client_port = ntohs(client_addr.sin_port);
 
     try {
-      auto qp = std::make_shared<SockQp>(this, client_socket, client_ip,
-                                         client_port, 64, 16);
+      auto qp = std::make_shared<SockQp>(this, client_socket, client_ip, client_port, 64, 16);
 
       std::lock_guard<std::mutex> lock(qps_mutex);
       qps.push_back(qp);
-      socket_infos.insert_or_assign(
-          client_socket, std::move(SocketInfo(SocketType::QP_SOCKET, qp)));
+      socket_infos.insert_or_assign(client_socket,
+                                    std::move(SocketInfo(SocketType::QP_SOCKET, qp)));
       qp_id_to_fd[qp->getInfo().qpn] = client_socket;
 
       LOG_INFO << "Accepted connection from " << client_ip << ":" << client_port
-               << ", socket: " << client_socket
-               << ", QP ID: " << qp->getInfo().qpn;
+               << ", socket: " << client_socket << ", QP ID: " << qp->getInfo().qpn;
     } catch (const std::exception& e) {
       LOG_ERROR << "Failed to create QP for accepted connection: " << e.what();
 
       std::lock_guard<std::mutex> lock(qps_mutex);
       socket_infos.insert_or_assign(client_socket, std::move(SocketInfo()));
 
-      LOG_INFO << "Accepted connection (non-QP) from " << client_ip << ":"
-               << client_port << ", socket: " << client_socket;
+      LOG_INFO << "Accepted connection (non-QP) from " << client_ip << ":" << client_port
+               << ", socket: " << client_socket;
     }
   }
 }
@@ -545,8 +515,7 @@ SockStatus SockQp::handleReceivedData(const char* data, size_t length) {
     const MessageHeader* header =
         reinterpret_cast<const MessageHeader*>(recv_buffer.data() + processed);
     size_t message_size = sizeof(MessageHeader);
-    if (header->type == MessageType::RESPONSE ||
-        header->type == MessageType::REQUEST) {
+    if (header->type == MessageType::RESPONSE || header->type == MessageType::REQUEST) {
       if (header->op_type == SockOpType::RDMA_WRITE ||
           header->op_type == SockOpType::RDMA_WRITE_WITH_IMM) {
         message_size += header->size;
@@ -573,8 +542,7 @@ SockStatus SockQp::handleReceivedData(const char* data, size_t length) {
 
   if (processed > 0) {
     if (processed < recv_bytes) {
-      memmove(recv_buffer.data(), recv_buffer.data() + processed,
-              recv_bytes - processed);
+      memmove(recv_buffer.data(), recv_buffer.data() + processed, recv_bytes - processed);
     }
     recv_bytes -= processed;
   }
@@ -584,15 +552,13 @@ SockStatus SockQp::handleReceivedData(const char* data, size_t length) {
 
 SockStatus SockQp::handleMessageHeader(const void* header_data) {
   const MessageHeader* header = static_cast<const MessageHeader*>(header_data);
-  char* data = const_cast<char*>(static_cast<const char*>(header_data)) +
-               sizeof(MessageHeader);
+  char* data = const_cast<char*>(static_cast<const char*>(header_data)) + sizeof(MessageHeader);
 
   // 更新使用计数
   ctx->updateSocketUsage(socket_fd);
 
   // 对于响应和完成通知，需要路由到正确的QP
-  if (header->type == MessageType::RESPONSE ||
-      header->type == MessageType::COMPLETION ||
+  if (header->type == MessageType::RESPONSE || header->type == MessageType::COMPLETION ||
       header->type == MessageType::ERROR) {
     if (header->conn_id != info.qpn) {
       // 消息不是给当前QP的，需要路由
@@ -635,17 +601,16 @@ SockStatus SockQp::handleMessageHeader(const void* header_data) {
               completion.type = MessageType::COMPLETION;
               completion.status = SockStatus::ERROR_MR_NOT_FOUND;
 
-              if (ctx->sendData(socket_fd, &completion,
-                                sizeof(MessageHeader)) != SockStatus::SUCCESS) {
+              if (ctx->sendData(socket_fd, &completion, sizeof(MessageHeader)) !=
+                  SockStatus::SUCCESS) {
                 LOG_ERROR << "Failed to send completion notification";
               }
             }
             return SockStatus::ERROR_MR_NOT_FOUND;
           }
 
-          char* src =
-              static_cast<char*>(mr->getBuff()) +
-              (header->dst_addr - reinterpret_cast<uint64_t>(mr->getBuff()));
+          char* src = static_cast<char*>(mr->getBuff()) +
+                      (header->dst_addr - reinterpret_cast<uint64_t>(mr->getBuff()));
 
           MessageHeader response_header = *header;
           response_header.type = MessageType::RESPONSE;
@@ -654,8 +619,7 @@ SockStatus SockQp::handleMessageHeader(const void* header_data) {
           memcpy(response.data(), &response_header, sizeof(MessageHeader));
           memcpy(response.data() + sizeof(MessageHeader), src, header->size);
 
-          if (ctx->sendData(socket_fd, response.data(), response.size()) !=
-              SockStatus::SUCCESS) {
+          if (ctx->sendData(socket_fd, response.data(), response.size()) != SockStatus::SUCCESS) {
             LOG_ERROR << "Failed to send RDMA_READ response";
 
             if (header->signaled) {
@@ -663,8 +627,8 @@ SockStatus SockQp::handleMessageHeader(const void* header_data) {
               completion.type = MessageType::COMPLETION;
               completion.status = SockStatus::ERROR_SEND_FAILED;
 
-              if (ctx->sendData(socket_fd, &completion,
-                                sizeof(MessageHeader)) != SockStatus::SUCCESS) {
+              if (ctx->sendData(socket_fd, &completion, sizeof(MessageHeader)) !=
+                  SockStatus::SUCCESS) {
                 LOG_ERROR << "Failed to send completion notification";
               }
             }
@@ -711,8 +675,8 @@ SockStatus SockQp::handleMessageHeader(const void* header_data) {
               completion.type = MessageType::COMPLETION;
               completion.status = SockStatus::ERROR_MR_NOT_FOUND;
 
-              if (ctx->sendData(socket_fd, &completion,
-                                sizeof(MessageHeader)) != SockStatus::SUCCESS) {
+              if (ctx->sendData(socket_fd, &completion, sizeof(MessageHeader)) !=
+                  SockStatus::SUCCESS) {
                 LOG_ERROR << "Failed to send completion notification";
               }
             }
@@ -720,9 +684,8 @@ SockStatus SockQp::handleMessageHeader(const void* header_data) {
           }
 
           // 计算目标地址并复制数据
-          char* dst =
-              static_cast<char*>(mr->getBuff()) +
-              (header->dst_addr - reinterpret_cast<uint64_t>(mr->getBuff()));
+          char* dst = static_cast<char*>(mr->getBuff()) +
+                      (header->dst_addr - reinterpret_cast<uint64_t>(mr->getBuff()));
           memcpy(dst, data, header->size);
 
           // 如果需要信号通知，发送完成通知
@@ -767,8 +730,8 @@ SockStatus SockQp::handleMessageHeader(const void* header_data) {
               completion.type = MessageType::COMPLETION;
               completion.status = SockStatus::ERROR_MR_NOT_FOUND;
 
-              if (ctx->sendData(socket_fd, &completion,
-                                sizeof(MessageHeader)) != SockStatus::SUCCESS) {
+              if (ctx->sendData(socket_fd, &completion, sizeof(MessageHeader)) !=
+                  SockStatus::SUCCESS) {
                 LOG_ERROR << "Failed to send completion notification";
               }
             }
@@ -791,12 +754,10 @@ SockStatus SockQp::handleMessageHeader(const void* header_data) {
           // 创建响应缓冲区
           std::vector<char> response(sizeof(MessageHeader) + sizeof(uint64_t));
           memcpy(response.data(), &response_header, sizeof(MessageHeader));
-          memcpy(response.data() + sizeof(MessageHeader), &old_value,
-                 sizeof(uint64_t));
+          memcpy(response.data() + sizeof(MessageHeader), &old_value, sizeof(uint64_t));
 
           // 发送响应
-          if (ctx->sendData(socket_fd, response.data(), response.size()) !=
-              SockStatus::SUCCESS) {
+          if (ctx->sendData(socket_fd, response.data(), response.size()) != SockStatus::SUCCESS) {
             LOG_ERROR << "Failed to send ATOMIC_ADD response";
 
             // 如果需要信号通知，发送带错误的完成通知
@@ -805,8 +766,8 @@ SockStatus SockQp::handleMessageHeader(const void* header_data) {
               completion.type = MessageType::COMPLETION;
               completion.status = SockStatus::ERROR_SEND_FAILED;
 
-              if (ctx->sendData(socket_fd, &completion,
-                                sizeof(MessageHeader)) != SockStatus::SUCCESS) {
+              if (ctx->sendData(socket_fd, &completion, sizeof(MessageHeader)) !=
+                  SockStatus::SUCCESS) {
                 LOG_ERROR << "Failed to send completion notification";
               }
             }
@@ -870,14 +831,12 @@ SockStatus SockQp::handleMessageHeader(const void* header_data) {
           }
 
           if (!mr) {
-            LOG_ERROR << "Warning: received response for unknown WR ID: "
-                      << header->wr_id;
+            LOG_ERROR << "Warning: received response for unknown WR ID: " << header->wr_id;
             break;
           }
 
-          char* dst =
-              static_cast<char*>(const_cast<void*>(mr->getBuff())) +
-              (header->src_addr - reinterpret_cast<uint64_t>(mr->getBuff()));
+          char* dst = static_cast<char*>(const_cast<void*>(mr->getBuff())) +
+                      (header->src_addr - reinterpret_cast<uint64_t>(mr->getBuff()));
           memcpy(dst, data, header->size);
           break;
         }
@@ -893,16 +852,14 @@ SockStatus SockQp::handleMessageHeader(const void* header_data) {
           }
 
           if (!mr) {
-            LOG_ERROR << "Warning: received response for unknown WR ID: "
-                      << header->wr_id;
+            LOG_ERROR << "Warning: received response for unknown WR ID: " << header->wr_id;
             break;
           }
 
           // 存储旧值
           uint64_t old_value;
           memcpy(&old_value, data, sizeof(uint64_t));
-          uint64_t* dst =
-              reinterpret_cast<uint64_t*>(const_cast<void*>(mr->getBuff()));
+          uint64_t* dst = reinterpret_cast<uint64_t*>(const_cast<void*>(mr->getBuff()));
           *dst = old_value;
           break;
         }
@@ -953,14 +910,12 @@ SockStatus SockQp::connect(const SockQpInfo& remote_info) {
   std::vector<char> buffer(sizeof(MessageHeader));
   memcpy(buffer.data(), &header, sizeof(MessageHeader));
 
-  std::string info_str = info.host + ":" + std::to_string(info.port) + ":" +
-                         std::to_string(info.qpn);
+  std::string info_str =
+      info.host + ":" + std::to_string(info.port) + ":" + std::to_string(info.qpn);
   buffer.resize(sizeof(MessageHeader) + info_str.size());
-  memcpy(buffer.data() + sizeof(MessageHeader), info_str.c_str(),
-         info_str.size());
+  memcpy(buffer.data() + sizeof(MessageHeader), info_str.c_str(), info_str.size());
 
-  if (ctx->sendData(socket_fd, buffer.data(), buffer.size()) !=
-      SockStatus::SUCCESS) {
+  if (ctx->sendData(socket_fd, buffer.data(), buffer.size()) != SockStatus::SUCCESS) {
     LOG_ERROR << "Failed to send connection information";
     return SockStatus::ERROR_CONN_FAILED;
   }
@@ -976,8 +931,7 @@ SockStatus SockQp::connect(const SockQpInfo& remote_info) {
     int result = select(socket_fd + 1, &readfds, nullptr, nullptr, &tv);
 
     if (result > 0) {
-      ssize_t received =
-          recv(socket_fd, buffer.data(), sizeof(MessageHeader), 0);
+      ssize_t received = recv(socket_fd, buffer.data(), sizeof(MessageHeader), 0);
       if (received == sizeof(MessageHeader)) {
         break;
       }
@@ -1001,9 +955,8 @@ SockStatus SockQp::connect(const SockQpInfo& remote_info) {
   return SockStatus::SUCCESS;
 }
 
-SockStatus SockQp::stageLoad(const SockMr* mr, const SockMrInfo& info,
-                             size_t size, uint64_t wrId, uint64_t srcOffset,
-                             uint64_t dstOffset, bool signaled) {
+SockStatus SockQp::stageLoad(const SockMr* mr, const SockMrInfo& info, size_t size, uint64_t wrId,
+                             uint64_t srcOffset, uint64_t dstOffset, bool signaled) {
   if (!mr) {
     return SockStatus::ERROR_INVALID_PARAM;
   }
@@ -1029,9 +982,8 @@ SockStatus SockQp::stageLoad(const SockMr* mr, const SockMrInfo& info,
   return SockStatus::SUCCESS;
 }
 
-SockStatus SockQp::stageSend(const SockMr* mr, const SockMrInfo& info,
-                             uint32_t size, uint64_t wrId, uint64_t srcOffset,
-                             uint64_t dstOffset, bool signaled) {
+SockStatus SockQp::stageSend(const SockMr* mr, const SockMrInfo& info, uint32_t size, uint64_t wrId,
+                             uint64_t srcOffset, uint64_t dstOffset, bool signaled) {
   if (!mr) {
     return SockStatus::ERROR_INVALID_PARAM;
   }
@@ -1057,9 +1009,8 @@ SockStatus SockQp::stageSend(const SockMr* mr, const SockMrInfo& info,
   return SockStatus::SUCCESS;
 }
 
-SockStatus SockQp::stageAtomicAdd(const SockMr* mr, const SockMrInfo& info,
-                                  uint64_t wrId, uint64_t dstOffset,
-                                  uint64_t addVal, bool signaled) {
+SockStatus SockQp::stageAtomicAdd(const SockMr* mr, const SockMrInfo& info, uint64_t wrId,
+                                  uint64_t dstOffset, uint64_t addVal, bool signaled) {
   if (!mr) {
     return SockStatus::ERROR_INVALID_PARAM;
   }
@@ -1086,9 +1037,8 @@ SockStatus SockQp::stageAtomicAdd(const SockMr* mr, const SockMrInfo& info,
   return SockStatus::SUCCESS;
 }
 
-SockStatus SockQp::stageSendWithImm(const SockMr* mr, const SockMrInfo& info,
-                                    uint32_t size, uint64_t wrId,
-                                    uint64_t srcOffset, uint64_t dstOffset,
+SockStatus SockQp::stageSendWithImm(const SockMr* mr, const SockMrInfo& info, uint32_t size,
+                                    uint64_t wrId, uint64_t srcOffset, uint64_t dstOffset,
                                     bool signaled, unsigned int immData) {
   if (!mr) {
     return SockStatus::ERROR_INVALID_PARAM;
@@ -1130,8 +1080,7 @@ SockStatus SockQp::sendRequest(const WrInfo& wr) {
   header.type = MessageType::REQUEST;
   header.op_type = wr.opcode;
   header.wr_id = wr.wr_id;
-  header.src_addr =
-      reinterpret_cast<uint64_t>(wr.local_mr->getBuff()) + wr.local_offset;
+  header.src_addr = reinterpret_cast<uint64_t>(wr.local_mr->getBuff()) + wr.local_offset;
   header.dst_addr = wr.remote_mr.addr + wr.remote_offset;
   header.size = wr.size;
   header.mr_id = wr.remote_mr.id;
@@ -1145,10 +1094,8 @@ SockStatus SockQp::sendRequest(const WrInfo& wr) {
   memcpy(buffer.data(), &header, sizeof(MessageHeader));
 
   // 对于WRITE操作，附加要发送的数据
-  if (wr.opcode == SockOpType::RDMA_WRITE ||
-      wr.opcode == SockOpType::RDMA_WRITE_WITH_IMM) {
-    const char* data =
-        static_cast<const char*>(wr.local_mr->getBuff()) + wr.local_offset;
+  if (wr.opcode == SockOpType::RDMA_WRITE || wr.opcode == SockOpType::RDMA_WRITE_WITH_IMM) {
+    const char* data = static_cast<const char*>(wr.local_mr->getBuff()) + wr.local_offset;
     buffer.resize(sizeof(MessageHeader) + wr.size);
     memcpy(buffer.data() + sizeof(MessageHeader), data, wr.size);
   }
@@ -1295,9 +1242,8 @@ void SockCtx::manageConnections() {
   // 收集所有socket信息用于LFU分析
   std::vector<std::pair<int, SocketInfo>> all_sockets;
   for (const auto& entry : socket_infos) {
-    all_sockets.push_back(std::make_pair(
-        entry.first,
-        std::move(SocketInfo(entry.second.type, entry.second.qp))));
+    all_sockets.push_back(
+        std::make_pair(entry.first, std::move(SocketInfo(entry.second.type, entry.second.qp))));
   }
 
   std::sort(all_sockets.begin(), all_sockets.end(), SocketLfuComparator());
@@ -1320,11 +1266,9 @@ void SockCtx::manageConnections() {
     for (const auto& entry : all_sockets) {
       if (to_close <= 0) break;
 
-      if (entry.second.type == SocketType::QP_SOCKET &&
-          !entry.second.qp.expired()) {
+      if (entry.second.type == SocketType::QP_SOCKET && !entry.second.qp.expired()) {
         auto qp = entry.second.qp.lock();
-        LOG_INFO << "Closing least frequently used QP connection, fd: "
-                 << entry.first
+        LOG_INFO << "Closing least frequently used QP connection, fd: " << entry.first
                  << ", usage count: " << entry.second.getUsageCount();
 
         // 关闭QP连接但不删除QP对象
