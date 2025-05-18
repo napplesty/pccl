@@ -196,31 +196,21 @@ using __float8_e5m24 = __nv_fp8x4_e5m2;
     while (__cond) {                                                     \
       if (__max_spin_cnt >= 0 && __spin_cnt++ == __max_spin_cnt) {       \
         __assert_fail(#__cond, __FILE__, __LINE__, __PRETTY_FUNCTION__); \
-        break; /* Defensively break after assert */                      \
+        break;                                                           \
       }                                                                  \
-      /* Optional: Add a yield/pause instruction here if appropriate */  \
     }                                                                    \
   } while (0);
 
-#define OR_POLL_MAYBE_JAILBREAK(__cond1, __cond2, __max_spin_cnt)              \
-  do {                                                                         \
-    int64_t __spin_cnt = 0;                                                    \
-    /* Loop while both conditions are true */                                  \
-    while ((__cond1) && (__cond2)) {                                           \
-      /* Check spin count *before* potentially infinite spinning */            \
-      if (__max_spin_cnt >= 0 && __spin_cnt++ == __max_spin_cnt) {             \
-        /* Conditions failed to become false within the spin limit */          \
-        __assert_fail("(" #__cond1 ") && (" #__cond2 ")", __FILE__, __LINE__,  \
-                      __PRETTY_FUNCTION__);                                    \
-        /* __assert_fail might not return, but break defensively */            \
-        break;                                                                 \
-      }                                                                        \
-      /* Optional: Add a yield/pause instruction here if appropriate for       \
-       * target */                                                             \
-      /* e.g., __asm__ volatile("pause"); for x86 */                           \
-      /* e.g., __nanosleep(1); // Caution: May not be suitable for GPU kernels \
-       */                                                                      \
-    }                                                                          \
+#define OR_POLL_MAYBE_JAILBREAK(__cond1, __cond2, __max_spin_cnt)             \
+  do {                                                                        \
+    int64_t __spin_cnt = 0;                                                   \
+    while ((__cond1) && (__cond2)) {                                          \
+      if (__max_spin_cnt >= 0 && __spin_cnt++ == __max_spin_cnt) {            \
+        __assert_fail("(" #__cond1 ") && (" #__cond2 ")", __FILE__, __LINE__, \
+                      __PRETTY_FUNCTION__);                                   \
+        break;                                                                \
+      }                                                                       \
+    }                                                                         \
   } while (0);
 
 #if defined(PCCL_CUDA_DEVICE_COMPILE)

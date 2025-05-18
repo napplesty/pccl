@@ -12,14 +12,17 @@
 namespace pccl {
 
 struct ConnectionContext::Impl {
-  ::std::vector<::std::shared_ptr<Connection>> connections_;
-  ::std::unordered_map<Transport, ::std::unique_ptr<IbCtx>> ib_ctxs_;
-  ::std::unordered_map<Transport, ::std::unique_ptr<SockCtx>> sock_ctxs_;
+  int active_phase;
+  std::shared_ptr<IbCtx> ib_ctx_0;
+  std::shared_ptr<IbCtx> ib_ctx_1;
+  std::shared_ptr<SockCtx> sock_ctx_0;
+  std::shared_ptr<SockCtx> sock_ctx_1;
   ::std::shared_ptr<CudaStreamWithFlags> ipcStream_;
   CUmemGenericAllocationHandle mcHandle_;
   Impl();
-  IbCtx* getIbContext(Transport ibTransport);
-  SockCtx* getSockContext(Transport sockTransport);
+  void flip();
+  std::shared_ptr<IbCtx> getIbContext(Transport ibTransport, bool active);
+  std::shared_ptr<IbCtx> getSockContext(Transport sockTransport, bool active);
 };
 
 }  // namespace pccl

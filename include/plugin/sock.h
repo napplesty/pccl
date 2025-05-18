@@ -124,12 +124,13 @@ class SockQp {
                               unsigned int immData);
   SockStatus postSend();
   int pollCq();
+  void clearCq(int num);
+  void clearCq(uint64_t wrId);
   SockQpInfo& getInfo() { return this->info; }
 
  private:
-  SockStatus getWcStatus(int idx) const;
+  SockStatus getWcStatus(uint64_t wrId) const;
   int getNumCqItems() const;
-  SockStatus handleReceivedData(const char* data, size_t length);
 
   void disconnect();
   SockStatus ensureConnected();
@@ -162,8 +163,8 @@ class SockQp {
   std::mutex mutex;
   std::condition_variable cv;
 
-  std::vector<WrInfo> pending_wrs;
-  std::vector<SockWc> wcs;
+  std::list<WrInfo> pending_wrs;
+  std::list<SockWc> wcs;
   std::atomic<int> num_signaled_posted_items;
   std::atomic<int> num_signaled_staged_items;
   std::atomic<int> num_completed_items;
@@ -217,7 +218,8 @@ class SockCtx {
 
   std::shared_ptr<SockQp> createQp(int max_cq_size, int max_wr);
   std::shared_ptr<SockMr> registerMr(void* buff, size_t size, bool isHostMemory);
-  SockStatus sendData(int socket_fd, const void* data, size_t size);
+  SockStatus sendData(int socket_fd, const void* header, size_t header_size, const void* payload,
+                      size_t payload_size);
   static std::atomic<uint32_t> next_mr_id;
   static std::atomic<int> next_qp_id;
 

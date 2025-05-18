@@ -25,7 +25,7 @@ struct Config {
   constexpr static int MAX_CHANNEL_PER_OPERATION = 32;
 
   // buffer
-  constexpr static size_t WORKSPACE_SIZE = 4 * 1024 * 1024;
+  constexpr static size_t WORKSPACE_SIZE = 16 * 1024 * 1024;
   constexpr static size_t DEVICE_BUFFER_SIZE = 256 * 1024 * 1024;
   constexpr static size_t HOST_BUFFER_SIZE = 256 * 1024 * 1024;
   constexpr static size_t SLOT_SIZE = 1024 * 1024;

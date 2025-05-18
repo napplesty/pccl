@@ -41,9 +41,12 @@ struct TransportInfo {
 };
 
 struct RegisteredMemory::Impl {
-  void* data;
-
-  void* originalDataPtr;
+  void* host_ptr;
+  void* device_ptr;
+  void* origianl_ptr;
+  int original_rank;
+  bool is_host_memory;
+  bool is_lib_memory;
   size_t size;
   uint64_t hostHash;
   uint64_t pidHash;
@@ -53,7 +56,7 @@ struct RegisteredMemory::Impl {
 
   int fileDesc = -1;
 
-  Impl(void* data, size_t size, TransportFlags transports,
+  Impl(bool isHostMemory, bool isLibMemory, TransportFlags transports,
        ConnectionContext::Impl& contextImpl);  // for local
   Impl(const ::std::vector<char>& data);       // for remote
   ~Impl();

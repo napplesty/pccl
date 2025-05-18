@@ -138,7 +138,6 @@ class RegisteredMemory {
   RegisteredMemory(uint64_t bufferOffset, bool isHostMemory);
   ~RegisteredMemory();
   int rankOf() const;
-  void* data() const;
   void* hostPtr() const;
   void* devicePtr() const;
   size_t size();
@@ -213,7 +212,8 @@ class ConnectionContext {
   ~ConnectionContext();
   TransportFlags getChannelTypes(::std::shared_ptr<Connection> connection);
   int remoteRankOf(::std::shared_ptr<Connection> connection);
-  ::std::shared_ptr<Connection> getConnection(Endpoint localEndpoint, Endpoint remoteEndpoint);
+  ::std::shared_ptr<Connection> getConnection(Endpoint localEndpoint, Endpoint remoteEndpoint,
+                                              TransportFlags transport);
   void connect(Endpoint localEndpoint, Endpoint remoteEndpoint);
   void disconnect(Endpoint localEndpoint, Endpoint remoteEndpoint);
   bool isConnected(Endpoint localEndpoint, Endpoint remoteEndpoint);

@@ -1,6 +1,7 @@
 #include <algorithm>
 
 #include "component/logging.h"
+#include "config.h"
 #include "cuda/registered_memory.h"
 #include "device.h"
 #include "utils.h"
@@ -23,20 +24,51 @@ CUmemAllocationHandleType getNvlsMemHandleType() {
 
 namespace pccl {
 
-RegisteredMemory::Impl::Impl(void *data, size_t size, TransportFlags transports,
+static void *gpu_buffer;
+static void *host_buffer;
+static void *lib_buffer;
+
+RegisteredMemory::Impl::Impl(bool isHostMemory, bool isLibMemory, TransportFlags transports,
                              ConnectionContext::Impl &contextImpl)
-    : data(data),
-      originalDataPtr(data),
-      size(size),
+    : host_ptr(nullptr),
+      device_ptr(nullptr),
+      origianl_ptr(nullptr),
+      original_rank(0),
+      is_host_memory(isHostMemory),
+      is_lib_memory(isLibMemory),
+      size(0),
       hostHash(getHostHash()),
       pidHash(getPidHash()),
       transports(transports) {
+  if (isLibMemory) {
+    size = Config::WORKSPACE_SIZE;
+  } else {
+    if (isHostMemory) {
+      size = Config::HOST_BUFFER_SIZE;
+    } else {
+      size = Config::DEVICE_BUFFER_SIZE;
+    }
+  }
+  if (isHostMemory) {
+    host_ptr = gpuCallocHost(size);
+#if defined(USE_CUDA)
+    CUDACHECK(cudaHostGetDevicePointer(&device_ptr, host_ptr, 0));
+#elif defined(USE_HIP)
+    device_ptr = host_ptr;
+#else
+    throw std::runtime_error("Unsupported device type");
+#endif
+  } else {
+    host_ptr = nullptr;
+    device_ptr = gpuCalloc(size);
+  }
   if (transports.has(Transport::CudaIpc)) {
     TransportInfo transportInfo;
     transportInfo.transport = Transport::CudaIpc;
     void *baseDataPtr;
     size_t baseDataSize;
-    CUCHECK(cuMemGetAddressRange((CUdeviceptr *)&baseDataPtr, &baseDataSize, (CUdeviceptr)data));
+    CUCHECK(
+        cuMemGetAddressRange((CUdeviceptr *)&baseDataPtr, &baseDataSize, (CUdeviceptr)device_ptr));
     this->isCuMemMapAlloc = isCuMemMapAllocated(baseDataPtr);
     if (this->isCuMemMapAlloc) {
       CUmemGenericAllocationHandle handle;
