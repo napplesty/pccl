@@ -26,7 +26,7 @@ PCCL_API SockQp::~SockQp() {
 
 PCCL_API SockStatus SockQp::connect(const SockQpInfo &remote_info) {
   this->remote_info = remote_info;
-  is_connected = ctx.lock()->qp_connect(remote_info, qpn); // 传递本地QPN
+  is_connected = ctx.lock()->qp_connect(remote_info, qpn);
   if (!is_connected) {
     return SockStatus::ERROR_GENERAL;
   }
@@ -35,68 +35,54 @@ PCCL_API SockStatus SockQp::connect(const SockQpInfo &remote_info) {
 
 PCCL_API void SockQp::stageLoad(const SockMr *mr, const SockMrInfo &info,
                                 size_t size, uint64_t wrId, uint64_t srcOffset,
-                                uint64_t dstOffset, bool signaled) {
+                                uint64_t dstOffset) {
   SockWr &wr = stageOp();
   wr.wr_id = wrId;
   wr.op_type = SockOpType::READ;
-  wr.local_mr_info = {mr->addr, mr->mr_id, static_cast<uint32_t>(mr->size),
-                      mr->is_host_memory};
+  wr.local_mr_info = {mr->addr, mr->mr_id, mr->is_host_memory};
   wr.remote_mr_info = info;
-  wr.size = size;
   wr.local_offset = dstOffset;
   wr.remote_offset = srcOffset;
   wr.imm = 0;
-  wr.signaled = signaled;
 }
 
 PCCL_API void SockQp::stageSend(const SockMr *mr, const SockMrInfo &info,
                                 uint32_t size, uint64_t wrId,
-                                uint64_t srcOffset, uint64_t dstOffset,
-                                bool signaled) {
+                                uint64_t srcOffset, uint64_t dstOffset) {
   SockWr &wr = stageOp();
   wr.wr_id = wrId;
   wr.op_type = SockOpType::WRITE;
-  wr.local_mr_info = {mr->addr, mr->mr_id, static_cast<uint32_t>(mr->size),
-                      mr->is_host_memory};
+  wr.local_mr_info = {mr->addr, mr->mr_id, mr->is_host_memory};
   wr.remote_mr_info = info;
-  wr.size = size;
   wr.local_offset = srcOffset;
   wr.remote_offset = dstOffset;
   wr.imm = 0;
-  wr.signaled = signaled;
 }
 
 PCCL_API void SockQp::stageAtomicAdd(const SockMr *mr, const SockMrInfo &info,
                                      uint64_t wrId, uint64_t dstOffset,
-                                     uint64_t addVal, bool signaled) {
+                                     uint64_t addVal) {
   SockWr &wr = stageOp();
   wr.wr_id = wrId;
   wr.op_type = SockOpType::ATOMIC_ADD;
-  wr.local_mr_info = {mr->addr, mr->mr_id, static_cast<uint32_t>(mr->size),
-                      mr->is_host_memory};
+  wr.local_mr_info = {mr->addr, mr->mr_id, mr->is_host_memory};
   wr.remote_mr_info = info;
-  wr.size = sizeof(uint64_t);
   wr.remote_offset = dstOffset;
   wr.atomic_value = addVal;
-  wr.imm = 0;
-  wr.signaled = signaled;
 }
 
 PCCL_API void SockQp::stageSendWithImm(const SockMr *mr, const SockMrInfo &info,
                                        uint32_t size, uint64_t wrId,
                                        uint64_t srcOffset, uint64_t dstOffset,
-                                       bool signaled, unsigned int immData) {
+                                       unsigned int immData) {
   SockWr &wr = stageOp();
   wr.wr_id = wrId;
   wr.op_type = SockOpType::WRITE_WITH_IMM;
-  wr.local_mr_info = {mr->addr, mr->mr_id, static_cast<uint32_t>(mr->size),
-                      mr->is_host_memory};
+  wr.local_mr_info = {mr->addr, mr->mr_id, mr->is_host_memory};
   wr.remote_mr_info = info;
-  wr.size = size;
   wr.local_offset = srcOffset;
   wr.remote_offset = dstOffset;
   wr.imm = immData;
-  wr.signaled = signaled;
 }
 
 PCCL_API SockStatus SockQp::postSend() {
@@ -109,6 +95,7 @@ PCCL_API SockStatus SockQp::postSend() {
     return SockStatus::ERROR_QP_STATE;
   }
 
+  std::lock_guard<std::mutex> lock(qp_mutex);
   shared_ctx->push_to_global_send_queue(std::move(staged_operations));
   staged_operations = std::make_shared<std::deque<SockWr>>();
   return SockStatus::SUCCESS;
@@ -130,7 +117,7 @@ PCCL_API SockQpInfo SockQp::getInfo() const {
 
 PCCL_API SockWr &SockQp::stageOp() {
   std::lock_guard<std::mutex> lock(qp_mutex);
-  if (staged_operations->size() < maxWrqSize) {
+  if (staged_operations->size() < (size_t)maxWrqSize) {
     int idx = staged_operations->size();
     staged_operations->emplace_back(SockWr());
     staged_operations->at(idx).local_qpn = qpn;
@@ -141,8 +128,6 @@ PCCL_API SockWr &SockQp::stageOp() {
 }
 
 PCCL_API SockCtx::SockCtx(SockAddr addr) : addr(addr), running(true) {
-  std::lock_guard<std::mutex> lock(ctx_mutex);
-
   listen_socket = socket(addr.family, SOCK_STREAM, 0);
   if (listen_socket < 0) {
     throw std::runtime_error("sockqp_lib create listen socket failed");
@@ -256,7 +241,6 @@ std::shared_ptr<SockMr> SockCtx::registerMr(void *buff, size_t size,
                                             bool is_host_memory) {
   auto mr = std::make_shared<SockMr>();
   mr->addr = reinterpret_cast<uintptr_t>(buff);
-  mr->size = size;
   mr->mr_id = next_mr_id++;
   mr->is_host_memory = is_host_memory;
   mr->ctx = weak_from_this();
@@ -283,13 +267,24 @@ createMessageHeader(const SockWr &wr, const SockAddr &local_addr,
   if (wr.op_type == SockOpType::HAND_SHAKE) {
     header->sock_addr = remote_addr;
   } else if (wr.op_type == SockOpType::HAND_SHAKE_ACK) {
-    header->sock_addr =
+    header->sock_addr = local_addr;
   } else {
     header->dst_mr_info = wr.remote_mr_info;
     header->dst_offset = wr.remote_offset;
     header->src_mr_info = wr.local_mr_info;
     header->src_offset = wr.local_offset;
-    return header;
+    header->size = wr.size;
   }
+  if (wr.op_type == SockOpType::WRITE_WITH_IMM) {
+    header->imm_data = wr.imm;
+  } else if (wr.op_type == SockOpType::ATOMIC_ADD) {
+    header->atomic_value = wr.atomic_value;
+  }
+  return header;
+}
+
+void SockCtx::sendThreadCycle() {
+
+};
 
 } // namespace pccl

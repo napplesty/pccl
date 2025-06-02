@@ -1,6 +1,8 @@
 #include "runtime.h"
+#include "component/lib_buffer.h"
 #include "component/logging.h"
 #include "config.h"
+#include "device.h"
 
 #include <map>
 #include <memory>
@@ -15,32 +17,29 @@ TransportFlags::TransportFlags(Transport transport) {
   this->set((size_t)transport, true);
 }
 
-TransportFlags::TransportFlags(detail::TransportFlagsBase bitset)
-    : detail::TransportFlagsBase(bitset) {}
+TransportFlags::TransportFlags(TransportFlagsBase bitset)
+    : TransportFlagsBase(bitset) {}
 
 bool TransportFlags::has(Transport transport) const {
   return test((size_t)transport);
 }
 
-bool TransportFlags::none() const { return detail::TransportFlagsBase::none(); }
+bool TransportFlags::none() const { return TransportFlagsBase::none(); }
 
-bool TransportFlags::any() const { return detail::TransportFlagsBase::any(); }
+bool TransportFlags::any() const { return TransportFlagsBase::any(); }
 
-bool TransportFlags::all() const { return detail::TransportFlagsBase::all(); }
+bool TransportFlags::all() const { return TransportFlagsBase::all(); }
 
-size_t TransportFlags::count() const {
-  return detail::TransportFlagsBase::count();
-}
+size_t TransportFlags::count() const { return TransportFlagsBase::count(); }
 
 TransportFlags &TransportFlags::operator|=(TransportFlags other) {
-  detail::TransportFlagsBase::operator|=(other);
+  TransportFlagsBase::operator|=(other);
   return *this;
 }
 
 TransportFlags TransportFlags::operator|(TransportFlags other) const {
-  detail::TransportFlagsBase result =
-      static_cast<detail::TransportFlagsBase>(*this) |
-      static_cast<detail::TransportFlagsBase>(other);
+  TransportFlagsBase result = static_cast<TransportFlagsBase>(*this) |
+                              static_cast<TransportFlagsBase>(other);
   return TransportFlags(result);
 }
 
@@ -51,14 +50,13 @@ TransportFlags TransportFlags::operator|(Transport transport) const {
 }
 
 TransportFlags &TransportFlags::operator&=(TransportFlags other) {
-  detail::TransportFlagsBase::operator&=(other);
+  TransportFlagsBase::operator&=(other);
   return *this;
 }
 
 TransportFlags TransportFlags::operator&(TransportFlags other) const {
-  detail::TransportFlagsBase result =
-      static_cast<detail::TransportFlagsBase>(*this) &
-      static_cast<detail::TransportFlagsBase>(other);
+  TransportFlagsBase result = static_cast<TransportFlagsBase>(*this) &
+                              static_cast<TransportFlagsBase>(other);
   return TransportFlags(result);
 }
 
@@ -68,14 +66,13 @@ TransportFlags TransportFlags::operator&(Transport transport) const {
 }
 
 TransportFlags &TransportFlags::operator^=(TransportFlags other) {
-  detail::TransportFlagsBase::operator^=(other);
+  TransportFlagsBase::operator^=(other);
   return *this;
 }
 
 TransportFlags TransportFlags::operator^(TransportFlags other) const {
-  detail::TransportFlagsBase result =
-      static_cast<detail::TransportFlagsBase>(*this) ^
-      static_cast<detail::TransportFlagsBase>(other);
+  TransportFlagsBase result = static_cast<TransportFlagsBase>(*this) ^
+                              static_cast<TransportFlagsBase>(other);
   return TransportFlags(result);
 }
 
@@ -85,144 +82,257 @@ TransportFlags TransportFlags::operator^(Transport transport) const {
 }
 
 TransportFlags TransportFlags::operator~() const {
-  return TransportFlags(detail::TransportFlagsBase::operator~());
+  return TransportFlags(TransportFlagsBase::operator~());
 }
 
 bool TransportFlags::operator==(TransportFlags other) const {
-  return detail::TransportFlagsBase::operator==(other);
+  return TransportFlagsBase::operator==(other);
 }
 
 bool TransportFlags::operator!=(TransportFlags other) const {
   return !(*this == other);
 }
 
-detail::TransportFlagsBase TransportFlags::toBitset() const {
-  return static_cast<detail::TransportFlagsBase>(*this);
+TransportFlagsBase TransportFlags::toBitset() const {
+  return static_cast<TransportFlagsBase>(*this);
 }
 
-// RegisteredMemory::Impl 实现
+// Implementation for the new static method
+TransportFlags TransportFlags::fromString(const std::string &s) {
+  if (s.length() > TransportFlagsSize) {
+    LOG_WARNING << "TransportFlags string for deserialization is too long: "
+                << s.length() << ", max expected: " << TransportFlagsSize;
+    return TransportFlags();
+  }
+  if (s.find_first_not_of("01") != std::string::npos) {
+    LOG_WARNING << "TransportFlags string contains invalid characters: " << s;
+    return TransportFlags();
+  }
+  return TransportFlags(TransportFlagsBase(s));
+}
+
 struct RegisteredMemory::Impl {
-  uint64_t bufferOffset;
-  bool isHostMemory;
-  int rank;
-  void *hostPtr;
-  void *devicePtr;
-  size_t bufferSize;
-  TransportFlags transports;
+  int rank_;
+  void *device_ptr_;
+  void *host_ptr_;
+  size_t size_;
+  BufferType type_;
+  uint64_t tag_;
+  bool is_host_memory_;
+  TransportFlags transports_;
 
-  Impl(uint64_t offset, bool isHost)
-      : bufferOffset(offset), isHostMemory(isHost), rank(0), hostPtr(nullptr),
-        devicePtr(nullptr), bufferSize(0) {}
+  Impl(int rank, void *device_ptr, void *host_ptr, size_t size, BufferType type,
+       uint64_t tag, bool is_host_memory, TransportFlags transports)
+      : rank_(rank), device_ptr_(device_ptr), host_ptr_(host_ptr), size_(size),
+        type_(type), tag_(tag), is_host_memory_(is_host_memory),
+        transports_(transports) {}
 };
-
-RegisteredMemory::RegisteredMemory(uint64_t bufferOffset, bool isHostMemory)
-    : pimpl_(std::make_shared<Impl>(bufferOffset, isHostMemory)) {}
-
-RegisteredMemory::~RegisteredMemory() {}
 
 RegisteredMemory::RegisteredMemory(std::shared_ptr<Impl> pimpl)
     : pimpl_(pimpl) {}
 
-int RegisteredMemory::rankOf() const { return pimpl_ ? pimpl_->rank : 0; }
+int RegisteredMemory::rankOf() const { return pimpl_ ? pimpl_->rank_ : 0; }
 
 void *RegisteredMemory::hostPtr() const {
-  return pimpl_ ? pimpl_->hostPtr : nullptr;
+  return pimpl_ ? pimpl_->host_ptr_ : nullptr;
 }
 
 void *RegisteredMemory::devicePtr() const {
-  return pimpl_ ? pimpl_->devicePtr : nullptr;
+  return pimpl_ ? pimpl_->device_ptr_ : nullptr;
 }
 
-size_t RegisteredMemory::size() { return pimpl_ ? pimpl_->bufferSize : 0; }
+size_t RegisteredMemory::size() const { return pimpl_ ? pimpl_->size_ : 0; }
 
-TransportFlags RegisteredMemory::transports() {
-  return pimpl_ ? pimpl_->transports : TransportFlags();
+BufferType RegisteredMemory::type() const {
+  return pimpl_ ? pimpl_->type_
+                : BufferType::LIB; // Default to LIB if pimpl_ is null
 }
 
-std::vector<char> RegisteredMemory::serialize() {
+uint64_t RegisteredMemory::tag() const {
+  return pimpl_ ? pimpl_->tag_ : 0; // Default to 0 if pimpl_ is null
+}
+
+TransportFlags RegisteredMemory::transports() const {
+  return pimpl_ ? pimpl_->transports_ : TransportFlags();
+}
+
+std::vector<char> RegisteredMemory::serialize() const {
   nlohmann::json j;
   if (pimpl_) {
-    j["bufferOffset"] = pimpl_->bufferOffset;
-    j["isHostMemory"] = pimpl_->isHostMemory;
-    j["rank"] = pimpl_->rank;
-    j["bufferSize"] = pimpl_->bufferSize;
+    j["rank"] = pimpl_->rank_;
+    j["isHostMemory"] = pimpl_->is_host_memory_;
+    j["size"] = pimpl_->size_;
+    j["type"] = static_cast<int>(pimpl_->type_);
+    j["tag"] = pimpl_->tag_;
+    j["transports"] = pimpl_->transports_.toBitset().to_string();
   }
   std::string s = j.dump();
   return std::vector<char>(s.begin(), s.end());
 }
 
 RegisteredMemory RegisteredMemory::deserialize(const std::vector<char> &data) {
+  if (data.empty()) {
+    LOG_WARNING << "RegisteredMemory::deserialize called with empty data.";
+    return RegisteredMemory(nullptr);
+  }
+
   std::string s(data.begin(), data.end());
-  nlohmann::json j = nlohmann::json::parse(s);
+  nlohmann::json j;
+  try {
+    j = nlohmann::json::parse(s);
+  } catch (const nlohmann::json::parse_error &e) {
+    LOG_ERROR << "Failed to parse RegisteredMemory JSON: " << e.what() << ".";
+    return RegisteredMemory(nullptr);
+  }
 
-  auto impl = std::make_shared<Impl>(j["bufferOffset"], j["isHostMemory"]);
-  impl->rank = j["rank"];
-  impl->bufferSize = j["bufferSize"];
+  if (!j.is_object() || j.empty()) {
+    LOG_ERROR << "Deserialized JSON for RegisteredMemory is not a valid object "
+                 "or is empty. JSON string: "
+              << s;
+    return RegisteredMemory(nullptr);
+  }
 
-  return RegisteredMemory(impl);
+  TransportFlags transports_val;
+  std::string transports_str = j.value("transports", "");
+  if (!transports_str.empty()) {
+    transports_val = TransportFlags::fromString(transports_str);
+  }
+
+  auto impl_ptr = std::make_shared<RegisteredMemory::Impl>(
+      j.value("rank", 0), nullptr, nullptr,
+      j.value("size", static_cast<size_t>(0)),
+      static_cast<BufferType>(
+          j.value("type", static_cast<int>(BufferType::LIB))),
+      j.value("tag", static_cast<uint64_t>(0)), j.value("isHostMemory", false),
+      transports_val);
+
+  return RegisteredMemory(impl_ptr);
 }
 
-// MemoryContext::Impl 实现
-class MemoryContext::Impl : public std::enable_shared_from_this<Impl> {
+class MemoryContext::Impl {
 public:
-  Impl()
-      : lib_buffer_(0, false), host_buffer_(0, true), device_buffer_(0, false) {
+  Impl() {
+    auto lib_buf = GpuBuffer<char>(Config::LIB_BUFFER_SIZE, true);
+    auto host_buf = GpuBuffer<char>(Config::HOST_BUFFER_SIZE, true);
+    auto device_buf = GpuBuffer<char>(Config::DEVICE_BUFFER_SIZE, false);
+
+    free_lib_func_ = lib_buf.free_func_;
+    free_host_func_ = host_buf.free_func_;
+    free_device_func_ = device_buf.free_func_;
+
+    lib_buffer_ = std::make_unique<RegisteredMemory>(
+        std::make_shared<RegisteredMemory::Impl>(
+            getEnv()->rank, lib_buf.devicePtr(), lib_buf.hostPtr(),
+            Config::LIB_BUFFER_SIZE, BufferType::LIB, 0, true,
+            ConnectionContext::getAvailableTransports()));
+
+    host_buffer_ = std::make_unique<RegisteredMemory>(
+        std::make_shared<RegisteredMemory::Impl>(
+            getEnv()->rank, host_buf.devicePtr(), host_buf.hostPtr(),
+            Config::HOST_BUFFER_SIZE, BufferType::HOST, 0, true,
+            ConnectionContext::getAvailableTransports()));
+
+    device_buffer_ = std::make_unique<RegisteredMemory>(
+        std::make_shared<RegisteredMemory::Impl>(
+            getEnv()->rank, device_buf.devicePtr(), nullptr,
+            Config::DEVICE_BUFFER_SIZE, BufferType::DEVICE, 0, false,
+            ConnectionContext::getAvailableTransports()));
+
+    lib = new (lib_buffer_->hostPtr()) LibBufferSlot();
   }
-  ~Impl() {}
 
-  void registerMemory(RegisteredMemory memory) {
-    // 在上下文中注册内存，使其可被其他进程访问
-    registered_memories_.push_back(memory);
+  ~Impl() {
+    free_lib_func_(lib_buffer_->hostPtr());
+    free_host_func_(host_buffer_->hostPtr());
+    free_device_func_(device_buffer_->devicePtr());
   }
 
-  RegisteredMemory getLibMemory() { return lib_buffer_; }
+  std::optional<RegisteredMemory>
+  tryAllocateMemory(size_t size, bool isHostMemory, int tag) {
+    std::lock_guard<std::mutex> lock(mutex);
+    static constexpr size_t granularity =
+        Config::HOST_BUFFER_SIZE / Config::NUM_SLOT;
+    size_t last_index = isHostMemory ? 0 : Config::NUM_SLOT;
+    size_t max_index = last_index + Config::NUM_SLOT;
+    for (; last_index < max_index &&
+           lib->predefined_slot[last_index].status == SlotStatus::ALLOCATED;
+         last_index++) {
+    }
 
-  RegisteredMemory allocateWorkspace(size_t size, bool isHostMemory, int tag) {
-    auto impl = std::make_shared<RegisteredMemory::Impl>(0, isHostMemory);
-    impl->bufferSize = size;
-    RegisteredMemory mem(impl);
-    workspaces_[tag] = mem;
-    return mem;
-  }
+    if (last_index == max_index) {
+      return std::nullopt;
+    }
 
-  std::vector<RegisteredMemory> waitWorkSpace(std::vector<int> &ranks,
-                                              int tag) {
-    // 等待其他进程分配对应的工作空间，实现同步
-    std::vector<RegisteredMemory> result;
-    for (int rank : ranks) {
-      if (workspaces_.find(tag) != workspaces_.end()) {
-        result.push_back(workspaces_[tag]);
+    size_t allocated_slot_count = (size + granularity - 1) / granularity;
+
+    for (size_t next_index = last_index + 1; next_index <= max_index;
+         next_index++) {
+      if (lib->predefined_slot[next_index - 1].status ==
+          SlotStatus::ALLOCATED) {
+        last_index = next_index;
+        continue;
+      }
+      if (next_index - last_index == allocated_slot_count) {
+        break;
       }
     }
-    return result;
+
+    if (last_index + allocated_slot_count > max_index) {
+      return std::nullopt;
+    }
+
+    for (size_t i = 0; i < allocated_slot_count; i++) {
+      lib->predefined_slot[last_index + i].status = SlotStatus::ALLOCATED;
+      lib->predefined_slot[last_index + i].tag = tag;
+    }
+
+    auto impl_ptr = std::make_shared<RegisteredMemory::Impl>(
+        getEnv()->rank,
+        (char *)lib_buffer_->devicePtr() + last_index * granularity,
+        (char *)lib_buffer_->hostPtr() + last_index * granularity, size,
+        isHostMemory ? BufferType::HOST : BufferType::DEVICE, tag, isHostMemory,
+        ConnectionContext::getAvailableTransports());
+
+    return RegisteredMemory(impl_ptr);
   }
 
-  RegisteredMemory getRemoteLibMemory(int rank) {
-    return RegisteredMemory(0, false);
+  bool registerMemory(RegisteredMemory memory) {
+    std::lock_guard<std::mutex> lock(mutex);
+    std::vector<char> mem_info = memory.serialize();
+    for (size_t i = 0; i < Config::NUM_SLOT; i++) {
+      if (lib->meta_slot[i].status == SlotStatus::FREE) {
+        lib->meta_slot[i].status = SlotStatus::ALLOCATED;
+        lib->meta_slot[i].tag = memory.tag();
+        std::memcpy(lib->meta_slot[i].handle, mem_info.data(), mem_info.size());
+        lib->meta_slot[i].transport = memory.transports();
+        return true;
+      }
+    }
+    return false;
   }
 
-  RegisteredMemory getRemoteWorkspace(int tag, int rank) {
-    return RegisteredMemory(0, false);
+  void freeMemory(RegisteredMemory memory) {
+    std::lock_guard<std::mutex> lock(mutex);
+    size_t granularity = Config::HOST_BUFFER_SIZE / Config::NUM_SLOT;
+    size_t index =
+        (char *)memory.devicePtr() - (char *)lib_buffer_->devicePtr();
+    size_t allocated_slot_count =
+        (memory.size() + granularity - 1) / granularity;
   }
 
-  void freeWorkspace(RegisteredMemory memory) {
-    // 释放工作空间内存
-    // TODO: 将内存归还给内存池
-  }
-
-  std::vector<char> serialize() {
-    nlohmann::json j;
-    j["workspace_count"] = workspaces_.size();
-    std::string s = j.dump();
-    return std::vector<char>(s.begin(), s.end());
-  }
+  RegisteredMemory getLibMemory() { return *lib_buffer_; }
+  RegisteredMemory getHostMemory() { return *host_buffer_; }
+  RegisteredMemory getDeviceMemory() { return *device_buffer_; }
 
 private:
-  RegisteredMemory lib_buffer_;
-  RegisteredMemory host_buffer_;
-  RegisteredMemory device_buffer_;
-  std::vector<RegisteredMemory> registered_memories_;
-  std::map<int, RegisteredMemory> workspaces_;
+  std::function<void(void *)> free_lib_func_;
+  std::function<void(void *)> free_host_func_;
+  std::function<void(void *)> free_device_func_;
+  std::unique_ptr<RegisteredMemory> lib_buffer_;
+  std::unique_ptr<RegisteredMemory> host_buffer_;
+  std::unique_ptr<RegisteredMemory> device_buffer_;
+  LibBufferSlot *lib;
+  std::mutex mutex;
 };
 
 MemoryContext::MemoryContext() : pimpl_(std::make_shared<Impl>()) {}

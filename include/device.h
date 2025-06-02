@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <functional>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -420,6 +421,7 @@ public:
 #else
       throw std::runtime_error("Failed to handle memory here")
 #endif
+      free_func_ = gpuFreeHost;
       return;
     }
 #if defined(NVLS_SUPPORT)
@@ -431,6 +433,7 @@ public:
       memory_ = gpuCallocPhysicalShared<T>(nelems, gran);
       device_ptr_ = memory_.get();
       host_ptr_ = nullptr;
+      free_func_ = gpuFreePhysical;
       return;
     }
 #endif // NVLS_SUPPORT
@@ -439,10 +442,12 @@ public:
     memory_ = gpuCallocUncachedShared<T>(nelems);
     device_ptr_ = memory_.get();
     host_ptr_ = memory_.get();
+    free_func_ = gpuFree;
 #else
     memory_ = gpuCallocShared<T>(nelems);
     device_ptr_ = memory_.get();
     host_ptr_ = nullptr;
+    free_func_ = gpuFree;
 #endif
   }
 
@@ -453,6 +458,8 @@ public:
   inline T *devicePtr() { return device_ptr_; }
   inline int deviceId() const { return deviceId_; }
   inline bool isHostMemory() const { return host_memory_; }
+
+  std::function<void(void *)> free_func_;
 
 private:
   bool host_memory_;

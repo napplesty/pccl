@@ -14,8 +14,6 @@
 namespace pccl {
 
 struct SockAddr {
-  uint64_t host_hash;
-  uint64_t pid_hash;
   union {
     struct {
       struct in_addr ip;
@@ -48,7 +46,6 @@ enum class SockStatus : int8_t {
 struct SockMrInfo {
   uintptr_t addr;
   int64_t mr_id;
-  uint32_t size;
   bool is_host_memory;
 };
 
@@ -57,7 +54,6 @@ class SockCtx;
 struct SockMr {
   ~SockMr();
   uintptr_t addr;
-  uint32_t size;
   int64_t mr_id;
   bool is_host_memory;
   std::weak_ptr<SockCtx> ctx;
@@ -81,7 +77,6 @@ struct SockWr {
   uint32_t remote_offset;
   uint32_t imm;
   uint64_t atomic_value;
-  bool signaled;
 };
 
 struct SockQpInfo {
@@ -94,16 +89,14 @@ public:
   ~SockQp();
   SockStatus connect(const SockQpInfo &remote_info);
   void stageLoad(const SockMr *mr, const SockMrInfo &info, size_t size,
-                 uint64_t wrId, uint64_t srcOffset, uint64_t dstOffset,
-                 bool signaled);
+                 uint64_t wrId, uint64_t srcOffset, uint64_t dstOffset);
   void stageSend(const SockMr *mr, const SockMrInfo &info, uint32_t size,
-                 uint64_t wrId, uint64_t srcOffset, uint64_t dstOffset,
-                 bool signaled);
+                 uint64_t wrId, uint64_t srcOffset, uint64_t dstOffset);
   void stageAtomicAdd(const SockMr *mr, const SockMrInfo &info, uint64_t wrId,
-                      uint64_t dstOffset, uint64_t addVal, bool signaled);
+                      uint64_t dstOffset, uint64_t addVal);
   void stageSendWithImm(const SockMr *mr, const SockMrInfo &info, uint32_t size,
                         uint64_t wrId, uint64_t srcOffset, uint64_t dstOffset,
-                        bool signaled, unsigned int immData);
+                        unsigned int immData);
   SockStatus postSend();
   int pollCq();
   SockWc &getWcStatus(int idx);

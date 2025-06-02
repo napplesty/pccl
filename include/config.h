@@ -27,10 +27,10 @@ struct Config {
       MAX_CHANNEL_PER_OPERATION * MAX_OPERATIONS_PER_CAPSULE;
 
   // buffer
-  constexpr static size_t WORKSPACE_SIZE = 256 * 1024 * 1024;
+  constexpr static size_t LIB_BUFFER_SIZE = 256 * 1024 * 1024;
   constexpr static size_t DEVICE_BUFFER_SIZE = 256 * 1024 * 1024;
   constexpr static size_t HOST_BUFFER_SIZE = 256 * 1024 * 1024;
-  constexpr static size_t SLOT_SIZE = 1024 * 1024;
+  constexpr static size_t NUM_SLOT = 256;
 
   // ib
   constexpr static int MAX_CQ_SIZE = MAX_ACTIVE_CONNECTIONS;
@@ -44,25 +44,25 @@ struct Config {
 };
 
 struct env {
-  const int rank;
-  const int localRank;
-  const int worldSize;
-  const std::string socketFamily;
-  const std::string socketAddr0;
-  const std::string socketPort0;
-  const std::string socketAddr1;
-  const std::string socketPort1;
-  const std::string ibSocketFamily;
-  const std::string ibDevice0;
-  const std::string ibDevice1;
-  const std::string ibPort0;
-  const std::string ibPort1;
-  const std::string netConfFile;
-  const std::string netConfAddr;
-  const std::string netConfPort;
-  const std::string netConfModel;
-  const std::string profileDir;
-  const std::string enableTransportList;
+  int rank;
+  int localRank;
+  int worldSize;
+  std::string socketFamily;
+  std::string socketAddr0;
+  std::string socketPort0;
+  std::string socketAddr1;
+  std::string socketPort1;
+  std::string ibSocketFamily;
+  std::string ibDevice0;
+  std::string ibDevice1;
+  std::string ibPort0;
+  std::string ibPort1;
+  std::string netConfFile;
+  std::string netConfAddr;
+  std::string netConfPort;
+  std::string netConfModel;
+  std::string profileDir;
+  std::string enableTransportList;
 };
 
 std::shared_ptr<env> getEnv();

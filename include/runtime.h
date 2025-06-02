@@ -15,6 +15,8 @@
 
 namespace pccl {
 
+class Communicator;
+
 std::string version();
 
 enum class ChannelType : int8_t {
@@ -130,6 +132,8 @@ public:
   }
   bool test(size_t pos) const { return TransportFlagsBase::test(pos); }
 
+  static TransportFlags fromString(const std::string &s);
+
 private:
   TransportFlags(TransportFlagsBase bitset);
 };
@@ -153,7 +157,7 @@ public:
   size_t size() const;
   BufferType type() const;
   TransportFlags transports() const;
-  int tag() const;
+  uint64_t tag() const;
 
   std::vector<char> serialize() const;
   static RegisteredMemory deserialize(const std::vector<char> &data);
@@ -168,7 +172,6 @@ private:
 
 class MemoryContext {
 public:
-  MemoryContext();
   ~MemoryContext();
   RegisteredMemory getPredefinedMemory(BufferType type);
   RegisteredMemory allocateWorkSpace(size_t size, bool isHostMemory, int tag);
@@ -179,13 +182,14 @@ public:
                                                    int tag);
 
 private:
+  friend class Communicator;
+  MemoryContext(std::shared_ptr<Communicator> communicator);
   class Impl;
   std::unique_ptr<Impl> pimpl_;
 };
 
 class Endpoint {
 public:
-  Endpoint();
   int rank() const;
   Transport transport() const;
   int maxWriteQueueSize() const;
@@ -196,6 +200,8 @@ public:
   static Endpoint deserialize(const std::vector<char> &data);
 
 private:
+  friend class Communicator;
+  Endpoint(std::shared_ptr<Communicator> communicator);
   struct Impl;
   Endpoint(std::shared_ptr<Impl> pimpl);
   std::shared_ptr<Impl> pimpl_;
@@ -295,8 +301,9 @@ private:
 
 class ConnectionContext {
 public:
-  ConnectionContext();
   ~ConnectionContext();
+  void registerEndpoint(int rank, Endpoint endpoint);
+  Endpoint getEndpoint(int rank);
   TransportFlags getChannelTypes(std::shared_ptr<Connection> connection);
   int remoteRankOf(std::shared_ptr<Connection> connection);
   std::shared_ptr<Connection> getConnection(Endpoint localEndpoint,
@@ -306,10 +313,15 @@ public:
   void disconnect(Endpoint localEndpoint, Endpoint remoteEndpoint);
   bool isConnected(Endpoint localEndpoint, Endpoint remoteEndpoint);
   bool notifyOperator(RegisteredMemory mem, std::vector<Endpoint> &endpoints);
+  TransportFlags getTransportFlags(Endpoint localEndpoint,
+                                   Endpoint remoteEndpoint);
+  static TransportFlags getAvailableTransports();
 
   std::shared_ptr<ClusterContext> clusterContext();
 
 private:
+  friend class Communicator;
+  ConnectionContext(std::shared_ptr<Communicator> communicator);
   struct Impl;
   std::unique_ptr<Impl> pimpl_;
   friend class RegisteredMemory;
@@ -354,9 +366,9 @@ private:
   struct Impl;
   std::unique_ptr<Impl> pimpl_;
 };
+
 class Operator {
 public:
-  Operator(std::string &path);
   ~Operator();
   std::string name() const;
   std::string collective() const;
@@ -364,14 +376,16 @@ public:
   bool isInplace() const;
   bool isConfigurable() const;
   Event execute(int rank, void *input, void *output, DataType dtype,
-                size_t inputSize, size_t outputSize, Event &event, bool flush);
+                size_t inputSize, size_t outputSize, Event &event, bool flush,
+                uint64_t tag);
 
 public:
+  Operator(std::string &path, std::shared_ptr<Communicator> communicator);
   class Impl;
   std::unique_ptr<Impl> impl_;
 };
 
-class Communicator {
+class Communicator : public std::enable_shared_from_this<Communicator> {
 public:
   Communicator();
   ~Communicator();
@@ -381,8 +395,9 @@ public:
 
   std::shared_ptr<MemoryContext> memoryContext();
   std::shared_ptr<ConnectionContext> connectionContext();
+  std::shared_ptr<ClusterContext> clusterContext();
 
-  void registerOperator(std::shared_ptr<Operator> operator);
+  std::shared_ptr<Operator> registerOperator(const std::string &operator_path);
 
 private:
   class Impl;
