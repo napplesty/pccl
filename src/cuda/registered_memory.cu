@@ -15,12 +15,12 @@ CUmemAllocationHandleType getNvlsMemHandleType() {
     return CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR;
   }
 #else
-  throw std::runtime_error(
-      "CUDA does not support NVLS. Please ensure your CUDA version supports NVLS to use this "
-      "feature.");
+  throw std::runtime_error("CUDA does not support NVLS. Please ensure your "
+                           "CUDA version supports NVLS to use this "
+                           "feature.");
 #endif
 }
-}  // namespace
+} // namespace
 
 namespace pccl {
 
@@ -28,18 +28,13 @@ static void *gpu_buffer;
 static void *host_buffer;
 static void *lib_buffer;
 
-RegisteredMemory::Impl::Impl(bool isHostMemory, bool isLibMemory, TransportFlags transports,
+RegisteredMemory::Impl::Impl(bool isHostMemory, bool isLibMemory,
+                             TransportFlags transports,
                              ConnectionContext::Impl &contextImpl)
-    : host_ptr(nullptr),
-      device_ptr(nullptr),
-      origianl_ptr(nullptr),
-      original_rank(0),
-      is_host_memory(isHostMemory),
-      is_lib_memory(isLibMemory),
-      size(0),
-      hostHash(getHostHash()),
-      pidHash(getPidHash()),
-      transports(transports) {
+    : host_ptr(nullptr), device_ptr(nullptr), origianl_ptr(nullptr),
+      original_rank(0), is_host_memory(isHostMemory),
+      is_lib_memory(isLibMemory), size(0), hostHash(getHostHash()),
+      pidHash(getPidHash()), transports(transports) {
   if (isLibMemory) {
     size = Config::WORKSPACE_SIZE;
   } else {
@@ -67,8 +62,8 @@ RegisteredMemory::Impl::Impl(bool isHostMemory, bool isLibMemory, TransportFlags
     transportInfo.transport = Transport::CudaIpc;
     void *baseDataPtr;
     size_t baseDataSize;
-    CUCHECK(
-        cuMemGetAddressRange((CUdeviceptr *)&baseDataPtr, &baseDataSize, (CUdeviceptr)device_ptr));
+    CUCHECK(cuMemGetAddressRange((CUdeviceptr *)&baseDataPtr, &baseDataSize,
+                                 (CUdeviceptr)device_ptr));
     this->isCuMemMapAlloc = isCuMemMapAllocated(baseDataPtr);
     if (this->isCuMemMapAlloc) {
       CUmemGenericAllocationHandle handle;
@@ -97,7 +92,8 @@ RegisteredMemory::Impl::Impl(bool isHostMemory, bool isLibMemory, TransportFlags
     auto addIb = [&](Transport ibTransport) {
       TransportInfo transportInfo;
       transportInfo.transport = ibTransport;
-      const IbMr *mr = contextImpl.getIbContext(ibTransport)->registerMr(data, size);
+      const IbMr *mr =
+          contextImpl.getIbContext(ibTransport)->registerMr(data, size);
       transportInfo.ibMr = mr;
       transportInfo.ibLocal = true;
       transportInfo.ibMrInfo = mr->getInfo();
@@ -126,75 +122,87 @@ PCCL_API RegisteredMemory::RegisteredMemory(int global_buffer_id) {
 #endif
   if (global_buffer_id < Config::MAX_LIB_BUFFER) {
     auto buffer = GpuBuffer<char>(Config::MAX_LIB_BUFFER_SIZE, true);
-    pimpl_ = std::make_shared<Impl>(buffer.data(), Config::MAX_LIB_BUFFER_SIZE, transports,
-                                    *contextImpl);
-  } else if (global_buffer_id < Config::MAX_LIB_BUFFER + Config::MAX_DEVICE_BUFFER) {
-    auto buffer = GpuBuffer<char>(Config::MAX_DEVICE_BUFFER_SIZE, false);
+    pimpl_ = std::make_shared<Impl>(buffer.data(), Config::MAX_LIB_BUFFER_SIZE,
+                                    transports, *contextImpl);
   } else if (global_buffer_id <
-             Config::MAX_LIB_BUFFER + Config::MAX_DEVICE_BUFFER + Config::MAX_HOST_BUFFER) {
+             Config::MAX_LIB_BUFFER + Config::MAX_DEVICE_BUFFER) {
+    auto buffer = GpuBuffer<char>(Config::MAX_DEVICE_BUFFER_SIZE, false);
+  } else if (global_buffer_id < Config::MAX_LIB_BUFFER +
+                                    Config::MAX_DEVICE_BUFFER +
+                                    Config::MAX_HOST_BUFFER) {
     auto buffer = GpuBuffer<char>(Config::MAX_HOST_BUFFER_SIZE, true);
   } else {
     throw std::runtime_error("Invalid global buffer id");
   }
 }
 
-PCCL_API RegisteredMemory::RegisteredMemory(std::shared_ptr<Impl> pimpl) : pimpl_(pimpl) {}
+PCCL_API RegisteredMemory::RegisteredMemory(std::shared_ptr<Impl> pimpl)
+    : pimpl_(pimpl) {}
 
 PCCL_API RegisteredMemory::~RegisteredMemory() = default;
 
 PCCL_API void *RegisteredMemory::data() const { return pimpl_->data; }
 
-PCCL_API void *RegisteredMemory::originalDataPtr() const { return pimpl_->originalDataPtr; }
+PCCL_API void *RegisteredMemory::originalDataPtr() const {
+  return pimpl_->originalDataPtr;
+}
 
 PCCL_API size_t RegisteredMemory::size() { return pimpl_->size; }
 
-PCCL_API TransportFlags RegisteredMemory::transports() { return pimpl_->transports; }
+PCCL_API TransportFlags RegisteredMemory::transports() {
+  return pimpl_->transports;
+}
 
 PCCL_API std::vector<char> RegisteredMemory::serialize() {
   std::vector<char> result;
-  std::copy_n(reinterpret_cast<char *>(&pimpl_->originalDataPtr), sizeof(pimpl_->originalDataPtr),
-              std::back_inserter(result));
+  std::copy_n(reinterpret_cast<char *>(&pimpl_->originalDataPtr),
+              sizeof(pimpl_->originalDataPtr), std::back_inserter(result));
   std::copy_n(reinterpret_cast<char *>(&pimpl_->size), sizeof(pimpl_->size),
               std::back_inserter(result));
-  std::copy_n(reinterpret_cast<char *>(&pimpl_->hostHash), sizeof(pimpl_->hostHash),
-              std::back_inserter(result));
-  std::copy_n(reinterpret_cast<char *>(&pimpl_->pidHash), sizeof(pimpl_->pidHash),
-              std::back_inserter(result));
-  std::copy_n(reinterpret_cast<char *>(&pimpl_->isCuMemMapAlloc), sizeof(pimpl_->isCuMemMapAlloc),
-              std::back_inserter(result));
-  std::copy_n(reinterpret_cast<char *>(&pimpl_->transports), sizeof(pimpl_->transports),
-              std::back_inserter(result));
-  if (pimpl_->transportInfos.size() > static_cast<size_t>(std::numeric_limits<int8_t>::max())) {
+  std::copy_n(reinterpret_cast<char *>(&pimpl_->hostHash),
+              sizeof(pimpl_->hostHash), std::back_inserter(result));
+  std::copy_n(reinterpret_cast<char *>(&pimpl_->pidHash),
+              sizeof(pimpl_->pidHash), std::back_inserter(result));
+  std::copy_n(reinterpret_cast<char *>(&pimpl_->isCuMemMapAlloc),
+              sizeof(pimpl_->isCuMemMapAlloc), std::back_inserter(result));
+  std::copy_n(reinterpret_cast<char *>(&pimpl_->transports),
+              sizeof(pimpl_->transports), std::back_inserter(result));
+  if (pimpl_->transportInfos.size() >
+      static_cast<size_t>(std::numeric_limits<int8_t>::max())) {
     throw std::runtime_error("Too many transport info entries");
   }
   int8_t transportCount = pimpl_->transportInfos.size();
   std::copy_n(reinterpret_cast<char *>(&transportCount), sizeof(transportCount),
               std::back_inserter(result));
   for (auto &entry : pimpl_->transportInfos) {
-    std::copy_n(reinterpret_cast<char *>(&entry.transport), sizeof(entry.transport),
-                std::back_inserter(result));
+    std::copy_n(reinterpret_cast<char *>(&entry.transport),
+                sizeof(entry.transport), std::back_inserter(result));
     if (entry.transport == Transport::CudaIpc) {
       if (pimpl_->isCuMemMapAlloc) {
         if (getNvlsMemHandleType() == CU_MEM_HANDLE_TYPE_FABRIC) {
           std::copy_n(reinterpret_cast<char *>(&entry.shareableHandle),
-                      sizeof(entry.shareableHandle), std::back_inserter(result));
+                      sizeof(entry.shareableHandle),
+                      std::back_inserter(result));
         } else {
-          std::copy_n(reinterpret_cast<char *>(&entry.rootPid), sizeof(entry.rootPid),
-                      std::back_inserter(result));
-          std::copy_n(reinterpret_cast<char *>(&entry.fileDesc), sizeof(entry.fileDesc),
-                      std::back_inserter(result));
+          std::copy_n(reinterpret_cast<char *>(&entry.rootPid),
+                      sizeof(entry.rootPid), std::back_inserter(result));
+          std::copy_n(reinterpret_cast<char *>(&entry.fileDesc),
+                      sizeof(entry.fileDesc), std::back_inserter(result));
         }
-        std::copy_n(reinterpret_cast<char *>(&entry.offsetFromBase), sizeof(entry.offsetFromBase),
-                    std::back_inserter(result));
+        std::copy_n(reinterpret_cast<char *>(&entry.offsetFromBase),
+                    sizeof(entry.offsetFromBase), std::back_inserter(result));
       } else {
         std::copy_n(reinterpret_cast<char *>(&entry.cudaIpcBaseHandle),
-                    sizeof(entry.cudaIpcBaseHandle), std::back_inserter(result));
+                    sizeof(entry.cudaIpcBaseHandle),
+                    std::back_inserter(result));
         std::copy_n(reinterpret_cast<char *>(&entry.cudaIpcOffsetFromBase),
-                    sizeof(entry.cudaIpcOffsetFromBase), std::back_inserter(result));
+                    sizeof(entry.cudaIpcOffsetFromBase),
+                    std::back_inserter(result));
       }
-    } else if (entry.transport == Transport::IB0 || entry.transport == Transport::IB1) {
-      std::copy_n(reinterpret_cast<char *>(&entry.ibMrInfo), sizeof(entry.ibMrInfo),
-                  std::back_inserter(result));
+    } else if (entry.transport == Transport::IB0 ||
+               entry.transport == Transport::IB1) {
+      std::copy_n(reinterpret_cast<char *>(&entry.ibMrInfo),
+                  sizeof(entry.ibMrInfo), std::back_inserter(result));
     } else {
       throw std::runtime_error("Unknown transport");
     }
@@ -202,26 +210,33 @@ PCCL_API std::vector<char> RegisteredMemory::serialize() {
   return result;
 }
 
-PCCL_API RegisteredMemory RegisteredMemory::deserialize(const std::vector<char> &data) {
+PCCL_API RegisteredMemory
+RegisteredMemory::deserialize(const std::vector<char> &data) {
   return RegisteredMemory(std::make_shared<Impl>(data));
 }
 
 RegisteredMemory::Impl::Impl(const std::vector<char> &serialization) {
   auto it = serialization.begin();
-  std::copy_n(it, sizeof(this->originalDataPtr), reinterpret_cast<char *>(&this->originalDataPtr));
+  std::copy_n(it, sizeof(this->originalDataPtr),
+              reinterpret_cast<char *>(&this->originalDataPtr));
   it += sizeof(this->originalDataPtr);
   std::copy_n(it, sizeof(this->size), reinterpret_cast<char *>(&this->size));
   it += sizeof(this->size);
-  std::copy_n(it, sizeof(this->hostHash), reinterpret_cast<char *>(&this->hostHash));
+  std::copy_n(it, sizeof(this->hostHash),
+              reinterpret_cast<char *>(&this->hostHash));
   it += sizeof(this->hostHash);
-  std::copy_n(it, sizeof(this->pidHash), reinterpret_cast<char *>(&this->pidHash));
+  std::copy_n(it, sizeof(this->pidHash),
+              reinterpret_cast<char *>(&this->pidHash));
   it += sizeof(this->pidHash);
-  std::copy_n(it, sizeof(this->isCuMemMapAlloc), reinterpret_cast<char *>(&this->isCuMemMapAlloc));
+  std::copy_n(it, sizeof(this->isCuMemMapAlloc),
+              reinterpret_cast<char *>(&this->isCuMemMapAlloc));
   it += sizeof(this->isCuMemMapAlloc);
-  std::copy_n(it, sizeof(this->transports), reinterpret_cast<char *>(&this->transports));
+  std::copy_n(it, sizeof(this->transports),
+              reinterpret_cast<char *>(&this->transports));
   it += sizeof(this->transports);
   int8_t transportCount;
-  std::copy_n(it, sizeof(transportCount), reinterpret_cast<char *>(&transportCount));
+  std::copy_n(it, sizeof(transportCount),
+              reinterpret_cast<char *>(&transportCount));
   it += sizeof(transportCount);
   for (int i = 0; i < transportCount; ++i) {
     TransportInfo transportInfo;
@@ -249,8 +264,9 @@ RegisteredMemory::Impl::Impl(const std::vector<char> &serialization) {
         std::copy_n(it, sizeof(transportInfo.cudaIpcBaseHandle),
                     reinterpret_cast<char *>(&transportInfo.cudaIpcBaseHandle));
         it += sizeof(transportInfo.cudaIpcBaseHandle);
-        std::copy_n(it, sizeof(transportInfo.cudaIpcOffsetFromBase),
-                    reinterpret_cast<char *>(&transportInfo.cudaIpcOffsetFromBase));
+        std::copy_n(
+            it, sizeof(transportInfo.cudaIpcOffsetFromBase),
+            reinterpret_cast<char *>(&transportInfo.cudaIpcOffsetFromBase));
         it += sizeof(transportInfo.cudaIpcOffsetFromBase);
       }
     } else if (transportInfo.transport == Transport::IB0 ||
@@ -272,17 +288,18 @@ RegisteredMemory::Impl::Impl(const std::vector<char> &serialization) {
   if (getHostHash() == this->hostHash && getPidHash() == this->pidHash) {
     // The memory is local to the process, so originalDataPtr is valid as is
     this->data = this->originalDataPtr;
-  } else if (transports.has(Transport::CudaIpc) && getHostHash() == this->hostHash) {
-    // The memory is local to the machine but not to the process, so we need to open the CUDA IPC
-    // handle
+  } else if (transports.has(Transport::CudaIpc) &&
+             getHostHash() == this->hostHash) {
+    // The memory is local to the machine but not to the process, so we need to
+    // open the CUDA IPC handle
     auto entry = getTransportInfo(Transport::CudaIpc);
     void *base;
     if (this->isCuMemMapAlloc) {
 #if defined(NVLS_SUPPORT)
       CUmemGenericAllocationHandle handle;
       if (getNvlsMemHandleType() == CU_MEM_HANDLE_TYPE_FABRIC) {
-        CUCHECK(
-            cuMemImportFromShareableHandle(&handle, entry.shareableHandle, getNvlsMemHandleType()));
+        CUCHECK(cuMemImportFromShareableHandle(&handle, entry.shareableHandle,
+                                               getNvlsMemHandleType()));
       } else {
         int rootPidFd = syscall(SYS_pidfd_open, entry.rootPid, 0);
         if (rootPidFd < 0) {
@@ -292,26 +309,30 @@ RegisteredMemory::Impl::Impl(const std::vector<char> &serialization) {
         if (fd < 0) {
           throw std::runtime_error("pidfd_getfd() failed");
         }
-        CUCHECK(cuMemImportFromShareableHandle(&handle, reinterpret_cast<void *>(fd),
-                                               CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR));
+        CUCHECK(cuMemImportFromShareableHandle(
+            &handle, reinterpret_cast<void *>(fd),
+            CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR));
         close(rootPidFd);
         close(fd);
       }
-      size_t minGran = getMulticastGranularity(size, CU_MULTICAST_GRANULARITY_MINIMUM);
-      size_t recommendedGran = getMulticastGranularity(size, CU_MULTICAST_GRANULARITY_RECOMMENDED);
-      size_t size = (this->size + recommendedGran - 1) / recommendedGran * recommendedGran;
+      size_t minGran =
+          getMulticastGranularity(size, CU_MULTICAST_GRANULARITY_MINIMUM);
+      size_t recommendedGran =
+          getMulticastGranularity(size, CU_MULTICAST_GRANULARITY_RECOMMENDED);
+      size_t size = (this->size + recommendedGran - 1) / recommendedGran *
+                    recommendedGran;
       CUCHECK(cuMemAddressReserve((CUdeviceptr *)&base, size, minGran, 0, 0));
       CUCHECK(cuMemMap((CUdeviceptr)base, size, 0, handle, 0));
       setRWAccess(base, size);
       this->data = static_cast<char *>(base) + entry.offsetFromBase;
 #else
-      throw ::std::runtime_error(
-          "CUDA does not support NVLS. Please ensure your CUDA version supports NVLS to use this "
-          "feature.");
+      throw std::runtime_error("CUDA does not support NVLS. Please ensure your "
+                               "CUDA version supports NVLS to use this "
+                               "feature.");
 #endif
     } else {
-      CUDACHECK(
-          cudaIpcOpenMemHandle(&base, entry.cudaIpcBaseHandle, cudaIpcMemLazyEnablePeerAccess));
+      CUDACHECK(cudaIpcOpenMemHandle(&base, entry.cudaIpcBaseHandle,
+                                     cudaIpcMemLazyEnablePeerAccess));
       this->data = static_cast<char *>(base) + entry.cudaIpcOffsetFromBase;
     }
   } else {
@@ -321,10 +342,10 @@ RegisteredMemory::Impl::Impl(const std::vector<char> &serialization) {
 }
 
 RegisteredMemory::Impl::~Impl() {
-  if (data && transports.has(Transport::CudaIpc) && getHostHash() == this->hostHash &&
-      getPidHash() != this->pidHash) {
-    void *base =
-        static_cast<char *>(data) - getTransportInfo(Transport::CudaIpc).cudaIpcOffsetFromBase;
+  if (data && transports.has(Transport::CudaIpc) &&
+      getHostHash() == this->hostHash && getPidHash() != this->pidHash) {
+    void *base = static_cast<char *>(data) -
+                 getTransportInfo(Transport::CudaIpc).cudaIpcOffsetFromBase;
     if (this->isCuMemMapAlloc) {
       CUmemGenericAllocationHandle handle;
       size_t size = 0;
@@ -334,14 +355,15 @@ RegisteredMemory::Impl::~Impl() {
       CUCHECK(cuMemUnmap((CUdeviceptr)base, size));
       CUCHECK(cuMemRelease(handle));
       CUCHECK(cuMemAddressFree((CUdeviceptr)base, size));
-      if (getNvlsMemHandleType() == CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR && fileDesc >= 0) {
+      if (getNvlsMemHandleType() == CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR &&
+          fileDesc >= 0) {
         close(fileDesc);
       }
     } else {
       cudaError_t err = cudaIpcCloseMemHandle(base);
       if (err != cudaSuccess) {
-        LOG_ERROR << "Failed to close CUDA IPC handle at pointer " << base << ": "
-                  << cudaGetErrorString(err) << std::endl;
+        LOG_ERROR << "Failed to close CUDA IPC handle at pointer " << base
+                  << ": " << cudaGetErrorString(err) << std::endl;
       }
     }
     data = nullptr;
@@ -349,7 +371,8 @@ RegisteredMemory::Impl::~Impl() {
   }
 }
 
-const TransportInfo &RegisteredMemory::Impl::getTransportInfo(Transport transport) const {
+const TransportInfo &
+RegisteredMemory::Impl::getTransportInfo(Transport transport) const {
   for (auto &entry : transportInfos) {
     if (entry.transport == transport) {
       return entry;
@@ -357,4 +380,4 @@ const TransportInfo &RegisteredMemory::Impl::getTransportInfo(Transport transpor
   }
   throw std::runtime_error("Transport data not found");
 }
-}  // namespace pccl
+} // namespace pccl

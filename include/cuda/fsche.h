@@ -1,101 +1,132 @@
 #pragma once
 
 #include "config.h"
+#include "cuda/internal_data_type.h"
 #include "device.h"
 
 namespace pccl {
 
-struct alignas(16) ProxyTrigger {
-  uint64_t fst, snd;
-};
+using ProxyTrigger = ProxyTriggerLayout;
 
-struct DeviceFifoHandle {
-  PCCL_CUDA_DEVICE_INLINE uint64_t push(ProxyTrigger trigger, int64_t maxSpinCount = 3e9) {
-    uint64_t curFifoTail = atomicFetchAdd(tail, (uint64_t)1, memoryOrderRelaxed);
-    trigger.snd ^= (1ull << 53);
+struct FifoDeviceHandle {
+  PCCL_CUDA_DEVICE_INLINE uint64_t push(ProxyTrigger trigger,
+                                        int64_t maxSpinCount = 3e9) {
+    uint64_t curFifoTail =
+        atomicFetchAdd(tail, (uint64_t)1, memoryOrderRelaxed);
+    trigger.setIssued();
 
-    // 检查FIFO是否已满，如果已满则等待
     uint64_t curHead = atomicLoad(head, memoryOrderAcquire);
     if (curFifoTail >= Config::FIFO_BUFFER_SIZE + curHead) {
-      POLL_MAYBE_JAILBREAK(
-          (curFifoTail >= Config::FIFO_BUFFER_SIZE + atomicLoad(head, memoryOrderAcquire)),
+      AND_POLL_MAYBE_JAILBREAK(
+          (curFifoTail >=
+           Config::FIFO_BUFFER_SIZE + atomicLoad(head, memoryOrderAcquire)),
+          trigger_buffer[curFifoTail % Config::FIFO_BUFFER_SIZE].checkIssued(),
           maxSpinCount);
     }
-
-    // 写入触发器到FIFO缓冲区
-    ProxyTrigger *triggerPtr = &(triggers[curFifoTail % Config::FIFO_BUFFER_SIZE]);
+    ProxyTrigger *triggerPtr =
+        &(trigger_buffer[curFifoTail % Config::FIFO_BUFFER_SIZE]);
     atomicStore(&(triggerPtr->snd), trigger.snd, memoryOrderRelaxed);
-    // 最后写入fst值，使用release内存序确保之前的写入对其他线程可见
     atomicStore(&(triggerPtr->fst), trigger.fst, memoryOrderRelease);
-
     return curFifoTail;
   }
 
   PCCL_CUDA_DEVICE_INLINE ProxyTrigger poll() {
     ProxyTrigger trigger;
     uint64_t curHead = atomicLoad(head, memoryOrderRelaxed);
-    ProxyTrigger *ptr = triggers + (curHead % Config::FIFO_BUFFER_SIZE);
+    ProxyTrigger *ptr = trigger_buffer + (curHead % Config::FIFO_BUFFER_SIZE);
 
-    // 使用acquire内存序读取fst，确保能看到最新的写入
-    trigger.fst = atomicLoad(&ptr->fst, memoryOrderAcquire);
-    trigger.snd = ptr->snd;
-
+    trigger.fst = atomicLoad(&ptr->fst, memoryOrderRelaxed);
+    trigger.snd = atomicLoad(&ptr->snd, memoryOrderAcquire);
     return trigger;
   }
 
   PCCL_CUDA_DEVICE_INLINE void pop() {
     uint64_t curHead = atomicFetchAdd(head, (uint64_t)1, memoryOrderRelaxed);
-    // 使用release内存序清零fst，确保这个操作对其他线程可见
-    atomicStore(&(triggers[curHead % Config::FIFO_BUFFER_SIZE].fst), uint64_t{0},
-                memoryOrderRelease);
+    trigger_buffer[curHead % Config::FIFO_BUFFER_SIZE].clean();
   }
 
-  PCCL_CUDA_DEVICE_INLINE void sync(uint64_t expected_head, int64_t maxSpinCount = 3e9) {
-    // 使用acquire内存序读取head，确保能看到最新的写入
+  PCCL_CUDA_DEVICE_INLINE void sync(uint64_t expected_head,
+                                    int64_t maxSpinCount = 3e9) {
     if (expected_head > atomicLoad(head, memoryOrderAcquire)) {
-      POLL_MAYBE_JAILBREAK((expected_head <= atomicLoad(head, memoryOrderAcquire)), maxSpinCount);
+      POLL_MAYBE_JAILBREAK(
+          (expected_head <= atomicLoad(head, memoryOrderAcquire)),
+          maxSpinCount);
     }
   }
 
-  ProxyTrigger *triggers;
+  ProxyTrigger *trigger_buffer;
   uint64_t *tail;
   uint64_t *head;
 };
 
-struct FifoDeviceHandle {
-#if defined(PCCL_CUDA_DEVICE_COMPILE)
-  PCCL_CUDA_DEVICE_INLINE uint64_t push(ProxyTrigger trigger, int64_t maxSpinCount = 3e9) {
-    uint64_t curFifoHead = atomicFetchAdd(this->head, (uint64_t)1, memoryOrderRelaxed);
-    trigger.snd ^= (1ull << 53);
-    if (curFifoHead >= Config::FIFO_BUFFER_SIZE + *(this->tailReplica)) {
-      OR_POLL_MAYBE_JAILBREAK(
-          (curFifoHead >=
-           Config::FIFO_BUFFER_SIZE + atomicLoad(this->tailReplica, memoryOrderRelaxed)),
-          (atomicLoad(&(this->triggers[curFifoHead % Config::FIFO_BUFFER_SIZE].fst),
-                      memoryOrderRelaxed) != 0),
+using InterSmMessage = InterSmMessageLayout;
+struct InterSmFifoDeviceHandle {
+  PCCL_CUDA_DEVICE_INLINE uint64_t push(InterSmMessage msg, int dstSmIdx,
+                                        int64_t maxSpinCount = 3e9) {
+    InterSmMessage *fifo = fifos[dstSmIdx];
+    uint64_t *tailPtr = tails[dstSmIdx];
+    uint64_t *headPtr = heads[dstSmIdx];
+
+    uint64_t curTail = atomicFetchAdd(tailPtr, (uint64_t)1, memoryOrderRelaxed);
+    msg.setIssued();
+
+    uint64_t curHead = atomicLoad(headPtr, memoryOrderAcquire);
+    if (curTail >= Config::INTER_SM_FIFO_SIZE + curHead) {
+      AND_POLL_MAYBE_JAILBREAK(
+          (curTail >= Config::INTER_SM_FIFO_SIZE +
+                          atomicLoad(headPtr, memoryOrderAcquire)),
+          fifo[curTail % Config::INTER_SM_FIFO_SIZE].checkIssued(),
           maxSpinCount);
     }
-    ProxyTrigger *triggerPtr = &(this->triggers[curFifoHead % Config::FIFO_BUFFER_SIZE]);
-    atomicStore(&(triggerPtr->snd), trigger.snd, memoryOrderRelaxed);
-    atomicStore(&(triggerPtr->fst), trigger.fst, memoryOrderRelaxed);
-    return curFifoHead;
+    InterSmMessage *slot = &fifo[curTail % Config::INTER_SM_FIFO_SIZE];
+    atomicStore(&slot->data[7], msg.data[7], memoryOrderRelease);
+#pragma unroll 7
+    for (int i = 0; i < 7; i++) {
+      atomicStore(&slot->data[i], msg.data[i], memoryOrderRelease);
+    }
+
+    return curTail;
   }
 
-  PCCL_CUDA_DEVICE_INLINE void sync(uint64_t curFifoHead, int64_t maxSpinCount = 1000000) {
-    OR_POLL_MAYBE_JAILBREAK(
-        (curFifoHead >= atomicLoad(this->tailReplica, memoryOrderRelaxed)),
-        (atomicLoad(&(this->triggers[curFifoHead % Config::FIFO_BUFFER_SIZE].fst),
-                    memoryOrderRelaxed) != 0),
-        maxSpinCount);
+  PCCL_CUDA_DEVICE_INLINE InterSmMessage poll(int srcSmId) {
+    int fifoIdx = srcSmId;
+
+    InterSmMessage *fifo = fifos[fifoIdx];
+    uint64_t *headPtr = heads[fifoIdx];
+
+    uint64_t curHead = atomicLoad(headPtr, memoryOrderRelaxed);
+    InterSmMessage *slot = &fifo[curHead % Config::INTER_SM_FIFO_SIZE];
+
+    InterSmMessage msg;
+#pragma unroll 7
+    for (int i = 0; i < 7; i++) {
+      msg.data[i] = atomicLoad(&slot->data[i], memoryOrderRelaxed);
+    }
+    msg.data[7] = atomicLoad(&slot->data[7], memoryOrderAcquire);
+
+    return msg;
   }
-#endif
-  ProxyTrigger *triggers;
-  uint64_t *tailReplica;
-  uint64_t *head;
+
+  PCCL_CUDA_DEVICE_INLINE void pop(int srcSmId) {
+    int fifoIdx = srcSmId;
+
+    InterSmMessage *fifo = fifos[fifoIdx];
+    uint64_t *headPtr = heads[fifoIdx];
+
+    uint64_t curHead = atomicFetchAdd(headPtr, (uint64_t)1, memoryOrderRelaxed);
+    fifo[curHead % Config::INTER_SM_FIFO_SIZE].clean();
+  }
+
+  PCCL_CUDA_DEVICE_INLINE int getSmId() const { return blockIdx.x; }
+
+  InterSmMessage **fifos;
+  uint64_t **tails;
+  uint64_t **heads;
+  int num_sms;
 };
 
 class Fifo {
- public:
+public:
   Fifo();
   ~Fifo();
   ProxyTrigger poll();
@@ -105,15 +136,21 @@ class Fifo {
   FifoDeviceHandle deviceHandle();
   using DeviceHandle = FifoDeviceHandle;
 
- private:
+private:
   struct Impl;
-  ::std::unique_ptr<Impl> pimpl;
+  std::unique_ptr<Impl> pimpl;
 };
 
-enum class ProxyHandlerResult {
-  Continue,
-  FlushFifoTailAndContinue,
-  Stop,
+class InterSmFifo {
+public:
+  InterSmFifo(int num_sm);
+  ~InterSmFifo();
+  InterSmFifoDeviceHandle deviceHandle();
+  using DeviceHandle = InterSmFifoDeviceHandle;
+
+private:
+  struct Impl;
+  std::unique_ptr<Impl> pimpl;
 };
 
-}  // namespace pccl
+} // namespace pccl

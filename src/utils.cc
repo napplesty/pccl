@@ -57,7 +57,7 @@ int bindToCpu() {
   return 0;
 }
 
-uint64_t getHash(const char* string, int n) {
+uint64_t getHash(const char *string, int n) {
   uint64_t result = 5381;
   for (int c = 0; c < n; c++) {
     result = ((result << 5) + result) ^ string[c];
@@ -65,10 +65,10 @@ uint64_t getHash(const char* string, int n) {
   return result;
 }
 
-::std::string getHostName(int maxlen, const char delim) {
-  ::std::string hostname(maxlen + 1, '\0');
-  if (gethostname(const_cast<char*>(hostname.data()), maxlen) != 0) {
-    throw ::std::runtime_error("gethostname failed");
+std::string getHostName(int maxlen, const char delim) {
+  std::string hostname(maxlen + 1, '\0');
+  if (gethostname(const_cast<char *>(hostname.data()), maxlen) != 0) {
+    throw std::runtime_error("gethostname failed");
   }
   int i = 0;
   while ((hostname[i] != delim) && (hostname[i] != '\0') && (i < maxlen - 1))
@@ -83,13 +83,13 @@ uint64_t computeHostHash(void) {
   const size_t hashLen = 1024;
   char hostHash[hashLen];
 
-  ::std::memset(hostHash, 0, hashLen);
+  std::memset(hostHash, 0, hashLen);
 
-  ::std::string hostName = getHostName(hashLen, '\0');
-  ::std::strncpy(hostHash, hostName.c_str(), hostName.size());
+  std::string hostName = getHostName(hashLen, '\0');
+  std::strncpy(hostHash, hostName.c_str(), hostName.size());
 
   if (hostName.size() < hashLen) {
-    ::std::ifstream file(HOSTID_FILE, ::std::ios::binary);
+    std::ifstream file(HOSTID_FILE, std::ios::binary);
     if (file.is_open()) {
       file.read(hostHash + hostName.size(), hashLen - hostName.size());
     }
@@ -100,17 +100,17 @@ uint64_t computeHostHash(void) {
 }
 
 uint64_t getHostHash(void) {
-  thread_local ::std::unique_ptr<uint64_t> hostHash =
-      ::std::make_unique<uint64_t>(computeHostHash());
+  thread_local std::unique_ptr<uint64_t> hostHash =
+      std::make_unique<uint64_t>(computeHostHash());
   if (hostHash == nullptr) {
-    hostHash = ::std::make_unique<uint64_t>(computeHostHash());
+    hostHash = std::make_unique<uint64_t>(computeHostHash());
   }
   return *hostHash;
 }
 
 uint64_t getPidHash(void) {
   pid_t pid = getpid();
-  return getHash(reinterpret_cast<const char*>(&pid), sizeof(pid));
+  return getHash(reinterpret_cast<const char *>(&pid), sizeof(pid));
 }
 
-}  // namespace pccl
+} // namespace pccl

@@ -1,43 +1,114 @@
-# PCCL
+# PCCL Runtime 实现说明
 
-Python Communication Library (PCCL)
+本文档说明PCCL Runtime 各组件的作用和实现思路。
 
-## Code Style and Linting
+## 整体架构
 
-This project uses the following tools to enforce code style and quality:
+PCCL（Programmable Collective Communication Library）是一个分布式集合通信库，类似于NCCL，但支持可编程的网络拓扑和动态重配置。
 
-### C++ Code Style
+## 核心组件
 
-- **clang-tidy**: Static analyzer for C++ code
-- **clang-format**: Code formatter for C++ following Google style guide
+### 1. TransportFlags - 传输类型标志
+- **作用**: 管理不同传输方式的标志位（IB、Ethernet、CUDA_IPC、NVLS等）
+- **实现**: 基于std::bitset的位操作，支持传输类型的组合和查询
+- **关键方法**: 位运算操作符、has()检查特定传输类型
 
-To check C++ code style:
-```bash
-clang-format -i path/to/your/file.cpp
-clang-tidy path/to/your/file.cpp
-```
+### 2. RegisteredMemory - 注册内存
+- **作用**: 管理跨进程共享的内存缓冲区，支持主机和设备内存
+- **实现**: 记录内存地址、大小、所有者rank和支持的传输类型
+- **关键功能**: 序列化/反序列化用于跨进程传输内存信息
 
-### Python Code Style
+### 3. MemoryContext - 内存上下文
+- **作用**: 管理内存分配、注册和释放，维护内存池
+- **实现**: 协调多进程间的内存分配，支持工作空间的同步分配
+- **关键方法**: 
+  - `allocateWorkspace()`: 分配集合操作的工作内存
+  - `waitWorkSpace()`: 等待其他进程完成内存分配
+  - `getRemoteMemory()`: 获取远程进程的内存引用
 
-- **pylint**: Comprehensive Python code analyzer that checks for bugs and style issues
+### 4. Endpoint - 通信端点
+- **作用**: 表示网络通信的端点，包含rank、网络地址和传输能力
+- **实现**: 封装进程的网络身份信息，支持序列化传输
+- **关键信息**: rank、传输类型、网络地址、队列大小
 
-To check Python code style:
-```bash
-# Check for issues
-pylint pccl
+### 5. Device/Switch/OpticalSwitch - 网络设备
+- **作用**: 表示集群中的计算设备和网络交换设备
+- **实现**: 
+  - Device: GPU/CPU设备，配置多种传输端点
+  - Switch: 网络交换机，支持NetConf协议配置
+  - OpticalSwitch: 光交换机，支持光路动态切换
+- **NetConf支持**: 通过command()和commit()实现网络设备的动态配置
 
-# Or use pre-commit to run all checks
-pre-commit run --all-files
-```
+### 6. ClusterContext - 集群上下文
+- **作用**: 管理集群拓扑和通信阶段的切换
+- **实现**: 
+  - 注册不同通信阶段的网络连接需求
+  - 支持阶段间的网络重配置
+  - 协调网络设备的配置切换
+- **阶段管理**: 
+  - `registerPhase()`: 注册阶段的连接需求
+  - `registerPhaseTransform()`: 注册阶段转换的配置命令
+  - `preCommit()/commit()`: 分阶段提交网络配置
 
-### Pre-commit Hooks
+### 7. ConnectionContext - 连接上下文
+- **作用**: 管理进程间的网络连接池
+- **实现**: 
+  - 维护连接的建立、查询和释放
+  - 支持多种传输类型的连接
+  - 集成集群上下文进行拓扑管理
+- **连接管理**: 
+  - `getConnection()`: 获取或创建连接
+  - `connect()/disconnect()`: 管理连接生命周期
+  - `isConnected()`: 查询连接状态
 
-This project uses pre-commit hooks to enforce code style before each commit.
-To install the pre-commit hooks:
+### 8. Communicator - 通信器
+- **作用**: 分布式通信的主要接口，协调内存和连接管理
+- **实现**: 
+  - 整合MemoryContext和ConnectionContext
+  - 管理远程进程信息的注册和同步
+  - 支持通信阶段的切换
+- **核心功能**: 
+  - `registerRemoteInfos()`: 注册远程进程端点信息
+  - `getOperatorSpace()`: 为集合操作分配协调内存
+  - `switchPhase()`: 切换通信阶段和网络拓扑
 
-```bash
-pip install pre-commit
-pre-commit install
-```
+### 9. Capsule - 操作胶囊
+- **作用**: 封装预编译的集合通信算法
+- **实现**: 从文件加载算法实现和元数据
+- **用途**: 支持算法的模块化和可插拔部署
 
-After installation, the hooks will run automatically on each commit.
+### 10. Operator - 集合通信操作符
+- **作用**: 执行具体的集合通信操作（AllReduce、AllGather等）
+- **实现**: 
+  - 基于Communicator和算法实现
+  - 支持原地操作和可配置参数
+  - 返回Event对象用于异步操作管理
+- **执行流程**: 
+  - `execute()`: 执行集合通信算法
+  - 返回Event包含flush、wait、record操作用于同步和性能分析
+
+## 关键特性
+
+### 1. 可编程网络拓扑
+- 支持通过NetConf协议动态配置网络设备
+- 支持通信阶段的切换和网络重配置
+- 集成光交换机支持高性能光网络
+
+### 2. 多传输支持
+- 统一抽象不同传输类型（IB、Ethernet、CUDA_IPC、NVLS）
+- 支持传输类型的组合和自动选择
+- 透明的跨传输类型通信
+
+### 3. 内存管理
+- 统一管理主机和设备内存
+- 支持跨进程的内存注册和共享
+- 协调的工作空间分配和同步
+
+### 4. 异步执行
+- Event机制支持异步操作
+- 分离数据传输和同步控制
+- 支持性能分析和调试
+
+## 实现状态
+
+当前所有方法都提供了占位实现，包含详细的功能说明和TODO注释，为后续的具体实现提供了清晰的指导。每个方法都基于函数命名和上下文分析推测了其预期功能。 

@@ -2,6 +2,8 @@
 
 #include <cstddef>
 #include <memory>
+#include <stdexcept>
+#include <string>
 #include <utility>
 
 #if defined(USE_HIP) || defined(USE_CUDA)
@@ -46,12 +48,14 @@ constexpr auto cudaIpcMemLazyEnablePeerAccess = hipIpcMemLazyEnablePeerAccess;
 
 constexpr auto CU_MEM_ALLOCATION_TYPE_PINNED = hipMemAllocationTypePinned;
 constexpr auto CU_MEM_LOCATION_TYPE_DEVICE = hipMemLocationTypeDevice;
-constexpr auto CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR = hipMemHandleTypePosixFileDescriptor;
-constexpr auto CU_MEM_ACCESS_FLAGS_PROT_READWRITE = hipMemAccessFlagsProtReadWrite;
+constexpr auto CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR =
+    hipMemHandleTypePosixFileDescriptor;
+constexpr auto CU_MEM_ACCESS_FLAGS_PROT_READWRITE =
+    hipMemAccessFlagsProtReadWrite;
 
 #ifndef CUDA_SUCCESS
 #define CUDA_SUCCESS hipSuccess
-#endif  // CUDA_SUCCESS
+#endif // CUDA_SUCCESS
 
 #define cudaGetErrorString(...) hipGetErrorString(__VA_ARGS__)
 #define cudaGetDevice(...) hipGetDevice(__VA_ARGS__)
@@ -81,7 +85,8 @@ constexpr auto CU_MEM_ACCESS_FLAGS_PROT_READWRITE = hipMemAccessFlagsProtReadWri
 #define cudaGraphLaunch(...) hipGraphLaunch(__VA_ARGS__)
 #define cudaGraphDestroy(...) hipGraphDestroy(__VA_ARGS__)
 #define cudaGraphExecDestroy(...) hipGraphExecDestroy(__VA_ARGS__)
-#define cudaThreadExchangeStreamCaptureMode(...) hipThreadExchangeStreamCaptureMode(__VA_ARGS__)
+#define cudaThreadExchangeStreamCaptureMode(...)                               \
+  hipThreadExchangeStreamCaptureMode(__VA_ARGS__)
 #define cudaIpcGetMemHandle(...) hipIpcGetMemHandle(__VA_ARGS__)
 #define cudaIpcOpenMemHandle(...) hipIpcOpenMemHandle(__VA_ARGS__)
 #define cudaIPCCL_CUDAoseMemHandle(...) hipIPCCL_CUDAoseMemHandle(__VA_ARGS__)
@@ -95,9 +100,12 @@ constexpr auto CU_MEM_ACCESS_FLAGS_PROT_READWRITE = hipMemAccessFlagsProtReadWri
 #define cuMemSetAccess(...) hipMemSetAccess(__VA_ARGS__)
 #define cuMemMap(...) hipMemMap(__VA_ARGS__)
 #define cuMemUnmap(...) hipMemUnmap(__VA_ARGS__)
-#define cuMemRetainAllocationHandle(...) hipMemRetainAllocationHandle(__VA_ARGS__)
-#define cuMemExportToShareableHandle(...) hipMemExportToShareableHandle(__VA_ARGS__)
-#define cuMemImportFromShareableHandle(...) hipMemImportFromShareableHandle(__VA_ARGS__)
+#define cuMemRetainAllocationHandle(...)                                       \
+  hipMemRetainAllocationHandle(__VA_ARGS__)
+#define cuMemExportToShareableHandle(...)                                      \
+  hipMemExportToShareableHandle(__VA_ARGS__)
+#define cuMemImportFromShareableHandle(...)                                    \
+  hipMemImportFromShareableHandle(__VA_ARGS__)
 
 #define __syncshm() asm volatile("s_waitcnt lgkmcnt(0) \n s_barrier");
 
@@ -115,12 +123,14 @@ PCCL_CUDA_HOST_DEVICE_INLINE T atomicLoad(const T *ptr, int memoryOrder) {
 }
 
 template <typename T>
-PCCL_CUDA_HOST_DEVICE_INLINE void atomicStore(T *ptr, const T &val, int memoryOrder) {
+PCCL_CUDA_HOST_DEVICE_INLINE void atomicStore(T *ptr, const T &val,
+                                              int memoryOrder) {
   __atomic_store_n(ptr, val, memoryOrder);
 }
 
 template <typename T>
-PCCL_CUDA_HOST_DEVICE_INLINE T atomicFetchAdd(T *ptr, const T &val, int memoryOrder) {
+PCCL_CUDA_HOST_DEVICE_INLINE T atomicFetchAdd(T *ptr, const T &val,
+                                              int memoryOrder) {
   return __atomic_fetch_add(ptr, val, memoryOrder);
 }
 
@@ -131,17 +141,19 @@ using __bfloat162 = __hip_bfloat162;
 using __float16 = __half;
 using __float162 = __half2;
 
-}  // namespace pccl
+} // namespace pccl
 
-extern "C" __device__ void __assert_fail(const char *__assertion, const char *__file,
-                                         unsigned int __line, const char *__function);
+extern "C" __device__ void __assert_fail(const char *__assertion,
+                                         const char *__file,
+                                         unsigned int __line,
+                                         const char *__function);
 
 #elif defined(USE_CUDA)
 
 #include <cuda.h>
+#include <cuda/atomic>
 #include <cuda_runtime.h>
 
-#include <cuda/atomic>
 #define __syncshm() __syncthreads();
 
 constexpr cuda::memory_order memoryOrderRelaxed = cuda::memory_order_relaxed;
@@ -153,7 +165,8 @@ constexpr cuda::memory_order memoryOrderSeqCst = cuda::memory_order_seq_cst;
 namespace pccl {
 
 template <typename T>
-PCCL_CUDA_HOST_DEVICE_INLINE T atomicLoad(T *ptr, cuda::memory_order memoryOrder) {
+PCCL_CUDA_HOST_DEVICE_INLINE T atomicLoad(T *ptr,
+                                          cuda::memory_order memoryOrder) {
   return cuda::atomic_ref<T, cuda::thread_scope_system>{*ptr}.load(memoryOrder);
 }
 
@@ -166,13 +179,15 @@ PCCL_CUDA_HOST_DEVICE_INLINE void atomicStore(T *ptr, const T &val,
 template <typename T>
 PCCL_CUDA_HOST_DEVICE_INLINE T atomicFetchAdd(T *ptr, const T &val,
                                               cuda::memory_order memoryOrder) {
-  return cuda::atomic_ref<T, cuda::thread_scope_system>{*ptr}.fetch_add(val, memoryOrder);
+  return cuda::atomic_ref<T, cuda::thread_scope_system>{*ptr}.fetch_add(
+      val, memoryOrder);
 }
 
 #include <cuda_bf16.h>
 #include <cuda_fp16.h>
 #include <cuda_fp8.h>
 #include <cuda_runtime_api.h>
+
 using __bfloat16 = __nv_bfloat16;
 using __bfloat162 = __nv_bfloat162;
 using __float16 = __nv_half;
@@ -186,51 +201,63 @@ using __float8_e5m24 = __nv_fp8x4_e5m2;
 
 #define NVLS_SUPPORT
 
-}  // namespace pccl
+} // namespace pccl
 
 #endif
 
-#define POLL_MAYBE_JAILBREAK(__cond, __max_spin_cnt)                     \
-  do {                                                                   \
-    int64_t __spin_cnt = 0;                                              \
-    while (__cond) {                                                     \
-      if (__max_spin_cnt >= 0 && __spin_cnt++ == __max_spin_cnt) {       \
-        __assert_fail(#__cond, __FILE__, __LINE__, __PRETTY_FUNCTION__); \
-        break;                                                           \
-      }                                                                  \
-    }                                                                    \
+#define POLL_MAYBE_JAILBREAK(__cond, __max_spin_cnt)                           \
+  do {                                                                         \
+    int64_t __spin_cnt = 0;                                                    \
+    while (__cond) {                                                           \
+      if (__max_spin_cnt >= 0 && __spin_cnt++ == __max_spin_cnt) {             \
+        __assert_fail(#__cond, __FILE__, __LINE__, __PRETTY_FUNCTION__);       \
+        break;                                                                 \
+      }                                                                        \
+    }                                                                          \
   } while (0);
 
-#define OR_POLL_MAYBE_JAILBREAK(__cond1, __cond2, __max_spin_cnt)             \
-  do {                                                                        \
-    int64_t __spin_cnt = 0;                                                   \
-    while ((__cond1) && (__cond2)) {                                          \
-      if (__max_spin_cnt >= 0 && __spin_cnt++ == __max_spin_cnt) {            \
-        __assert_fail("(" #__cond1 ") && (" #__cond2 ")", __FILE__, __LINE__, \
-                      __PRETTY_FUNCTION__);                                   \
-        break;                                                                \
-      }                                                                       \
-    }                                                                         \
+#define OR_POLL_MAYBE_JAILBREAK(__cond1, __cond2, __max_spin_cnt)              \
+  do {                                                                         \
+    int64_t __spin_cnt = 0;                                                    \
+    while ((__cond1) && (__cond2)) {                                           \
+      if (__max_spin_cnt >= 0 && __spin_cnt++ == __max_spin_cnt) {             \
+        __assert_fail("(" #__cond1 ") && (" #__cond2 ")", __FILE__, __LINE__,  \
+                      __PRETTY_FUNCTION__);                                    \
+        break;                                                                 \
+      }                                                                        \
+    }                                                                          \
+  } while (0);
+
+#define AND_POLL_MAYBE_JAILBREAK(__cond1, __cond2, __max_spin_cnt)             \
+  do {                                                                         \
+    int64_t __spin_cnt = 0;                                                    \
+    while ((__cond1) || (__cond2)) {                                           \
+      if (__max_spin_cnt >= 0 && __spin_cnt++ == __max_spin_cnt) {             \
+        __assert_fail("(" #__cond1 ") && (" #__cond2 ")", __FILE__, __LINE__,  \
+                      __PRETTY_FUNCTION__);                                    \
+        break;                                                                 \
+      }                                                                        \
+    }                                                                          \
   } while (0);
 
 #if defined(PCCL_CUDA_DEVICE_COMPILE)
 
-#define CUDACHECK(cmd)                                                                         \
-  do {                                                                                         \
-    cudaError_t err = cmd;                                                                     \
-    if (err != cudaSuccess) {                                                                  \
-      throw ::std::runtime_error(::std::string("Call to " #cmd " failed. ") + __FILE__ + ":" + \
-                                 ::std::to_string(__LINE__));                                  \
-    }                                                                                          \
+#define CUDACHECK(cmd)                                                         \
+  do {                                                                         \
+    cudaError_t err = cmd;                                                     \
+    if (err != cudaSuccess) {                                                  \
+      throw std::runtime_error(std::string("Call to " #cmd " failed. ") +      \
+                               __FILE__ + ":" + std::to_string(__LINE__));     \
+    }                                                                          \
   } while (false)
 
-#define CUCHECK(cmd)                                                                           \
-  do {                                                                                         \
-    CUresult err = cmd;                                                                        \
-    if (err != CUDA_SUCCESS) {                                                                 \
-      throw ::std::runtime_error(::std::string("Call to " #cmd " failed. ") + __FILE__ + ":" + \
-                                 ::std::to_string(__LINE__));                                  \
-    }                                                                                          \
+#define CUCHECK(cmd)                                                           \
+  do {                                                                         \
+    CUresult err = cmd;                                                        \
+    if (err != CUDA_SUCCESS) {                                                 \
+      throw std::runtime_error(std::string("Call to " #cmd " failed. ") +      \
+                               __FILE__ + ":" + std::to_string(__LINE__));     \
+    }                                                                          \
   } while (false)
 
 namespace pccl {
@@ -258,9 +285,11 @@ void *gpuCalloc(size_t size);
 void *gpuCallocHost(size_t size);
 void gpuFree(void *ptr);
 void gpuFreeHost(void *ptr);
-void gpuMemcpy(void *dst, const void *src, size_t size, cudaMemcpyKind kind = cudaMemcpyDefault);
+void gpuMemcpy(void *dst, const void *src, size_t size,
+               cudaMemcpyKind kind = cudaMemcpyDefault);
 void gpuMemcpyAsync(void *dst, const void *src, size_t size,
-                    cudaMemcpyKind kind = cudaMemcpyDefault, cudaStream_t stream = 0);
+                    cudaMemcpyKind kind = cudaMemcpyDefault,
+                    cudaStream_t stream = 0);
 
 #if defined(USE_HIP)
 void *gpuCallocUncached(size_t bytes);
@@ -270,11 +299,13 @@ void *gpuCallocPhysical(size_t bytes, size_t gran = 0, size_t align = 0);
 void gpuFreePhysical(void *ptr);
 #endif
 
-template <class T, class Deleter, class Memory, typename Alloc, typename... Args>
+template <class T, class Deleter, class Memory, typename Alloc,
+          typename... Args>
 Memory safeAlloc(Alloc alloc, size_t nelems, Args &&...args) {
   T *ptr = nullptr;
   try {
-    ptr = reinterpret_cast<T *>(alloc(nelems * sizeof(T), ::std::forward<Args>(args)...));
+    ptr = reinterpret_cast<T *>(
+        alloc(nelems * sizeof(T), std::forward<Args>(args)...));
   } catch (...) {
     if (ptr) {
       Deleter()(ptr);
@@ -284,77 +315,76 @@ Memory safeAlloc(Alloc alloc, size_t nelems, Args &&...args) {
   return Memory(ptr, Deleter());
 }
 
-template <class T = void>
-struct GpuDeleter {
+template <class T = void> struct GpuDeleter {
   void operator()(void *ptr) { gpuFree(ptr); }
 };
 
-template <class T = void>
-struct GpuHostDeleter {
+template <class T = void> struct GpuHostDeleter {
   void operator()(void *ptr) { gpuFreeHost(ptr); }
 };
 
-template <class T>
-using UniqueGpuPtr = ::std::unique_ptr<T, GpuDeleter<T>>;
+template <class T> using UniqueGpuPtr = std::unique_ptr<T, GpuDeleter<T>>;
 
 template <class T>
-using UniqueGpuHostPtr = ::std::unique_ptr<T, GpuHostDeleter<T>>;
+using UniqueGpuHostPtr = std::unique_ptr<T, GpuHostDeleter<T>>;
 
-template <class T>
-auto gpuCallocShared(size_t nelems = 1) {
-  return safeAlloc<T, GpuDeleter<T>, ::std::shared_ptr<T>>(gpuCalloc, nelems);
+template <class T> auto gpuCallocShared(size_t nelems = 1) {
+  return safeAlloc<T, GpuDeleter<T>, std::shared_ptr<T>>(gpuCalloc, nelems);
 }
 
-template <class T>
-auto gpuCallocUnique(size_t nelems = 1) {
+template <class T> auto gpuCallocUnique(size_t nelems = 1) {
   return safeAlloc<T, GpuDeleter<T>, UniqueGpuPtr<T>>(gpuCalloc, nelems);
 }
 
-template <class T>
-auto gpuCallocHostShared(size_t nelems = 1) {
-  return safeAlloc<T, GpuHostDeleter<T>, ::std::shared_ptr<T>>(gpuCallocHost, nelems);
+template <class T> auto gpuCallocHostShared(size_t nelems = 1) {
+  return safeAlloc<T, GpuHostDeleter<T>, std::shared_ptr<T>>(gpuCallocHost,
+                                                             nelems);
 }
 
-template <class T>
-auto gpuCallocHostUnique(size_t nelems = 1) {
-  return safeAlloc<T, GpuHostDeleter<T>, UniqueGpuHostPtr<T>>(gpuCallocHost, nelems);
+template <class T> auto gpuCallocHostUnique(size_t nelems = 1) {
+  return safeAlloc<T, GpuHostDeleter<T>, UniqueGpuHostPtr<T>>(gpuCallocHost,
+                                                              nelems);
 }
 
 #if defined(USE_HIP)
 
-template <class T>
-auto gpuCallocUncachedShared(size_t nelems = 1) {
-  return safeAlloc<T, GpuDeleter<T>, ::std::shared_ptr<T>>(gpuCallocUncached, nelems);
+template <class T> auto gpuCallocUncachedShared(size_t nelems = 1) {
+  return safeAlloc<T, GpuDeleter<T>, std::shared_ptr<T>>(gpuCallocUncached,
+                                                         nelems);
 }
 
-template <class T>
-auto gpuCallocUncachedUnique(size_t nelems = 1) {
-  return safeAlloc<T, GpuDeleter<T>, UniqueGpuPtr<T>>(gpuCallocUncached, nelems);
+template <class T> auto gpuCallocUncachedUnique(size_t nelems = 1) {
+  return safeAlloc<T, GpuDeleter<T>, UniqueGpuPtr<T>>(gpuCallocUncached,
+                                                      nelems);
 }
 
-#elif defined(NVLS_SUPPORT)
+#endif
 
-template <class T = void>
-struct GpuPhysicalDeleter {
+#if defined(NVLS_SUPPORT)
+
+template <class T = void> struct GpuPhysicalDeleter {
   void operator()(void *ptr) { gpuFreePhysical(ptr); }
 };
 
 template <class T>
-using UniqueGpuPhysicalPtr = ::std::unique_ptr<T, GpuPhysicalDeleter<T>>;
+using UniqueGpuPhysicalPtr = std::unique_ptr<T, GpuPhysicalDeleter<T>>;
 
 template <class T>
-auto gpuCallocPhysicalShared(size_t nelems = 1, size_t gran = 0, size_t align = 0) {
-  return safeAlloc<T, GpuPhysicalDeleter<T>, ::std::shared_ptr<T>>(gpuCallocPhysical, nelems, gran,
-                                                                   align);
+auto gpuCallocPhysicalShared(size_t nelems = 1, size_t gran = 0,
+                             size_t align = 0) {
+  return safeAlloc<T, GpuPhysicalDeleter<T>, std::shared_ptr<T>>(
+      gpuCallocPhysical, nelems, gran, align);
 }
 
 template <class T>
-auto gpuCallocPhysicalUnique(size_t nelems = 1, size_t gran = 0, size_t align = 0) {
-  return safeAlloc<T, GpuPhysicalDeleter<T>, UniqueGpuPhysicalPtr<T>>(gpuCallocPhysical, nelems,
-                                                                      gran, align);
+auto gpuCallocPhysicalUnique(size_t nelems = 1, size_t gran = 0,
+                             size_t align = 0) {
+  return safeAlloc<T, GpuPhysicalDeleter<T>, UniqueGpuPhysicalPtr<T>>(
+      gpuCallocPhysical, nelems, gran, align);
 }
 
-size_t getMulticastGranularity(size_t size, CUmulticastGranularity_flags granFlag);
+size_t getMulticastGranularity(size_t size,
+                               CUmulticastGranularity_flags granFlag);
 
 #endif
 
@@ -365,17 +395,18 @@ void gpuMemcpyAsync(T *dst, const T *src, size_t nelems, cudaStream_t stream,
 }
 
 template <class T = char>
-void gpuMemcpy(T *dst, const T *src, size_t nelems, cudaMemcpyKind kind = cudaMemcpyDefault) {
+void gpuMemcpy(T *dst, const T *src, size_t nelems,
+               cudaMemcpyKind kind = cudaMemcpyDefault) {
   gpuMemcpy(dst, src, nelems * sizeof(T), kind);
 }
 
 bool isNvlsSupported();
 bool isCuMemMapAllocated([[maybe_unused]] void *ptr);
 
-template <class T = char>
-class GpuBuffer {
- public:
-  GpuBuffer(size_t nelems, bool host_memory = false) : host_memory_(host_memory), nelems_(nelems) {
+template <class T = char> class GpuBuffer {
+public:
+  GpuBuffer(size_t nelems, bool host_memory = false)
+      : host_memory_(host_memory), nelems_(nelems) {
     if (nelems == 0) {
       bytes_ = 0;
       return;
@@ -383,41 +414,55 @@ class GpuBuffer {
     CUDACHECK(cudaGetDevice(&deviceId_));
     if (host_memory) {
       memory_ = gpuCallocHostShared<T>(nelems);
+      host_ptr_ = memory_.get();
+#if defined(USE_CUDA)
+      CUDACHECK(cudaHostGetDevicePointer(&device_ptr_, host_ptr_, 0));
+#else
+      throw std::runtime_error("Failed to handle memory here")
+#endif
       return;
     }
 #if defined(NVLS_SUPPORT)
     if (isNvlsSupported()) {
-      size_t gran =
-          getMulticastGranularity(nelems * sizeof(T), CU_MULTICAST_GRANULARITY_RECOMMENDED);
-      bytes_ = (nelems * sizeof(T) + gran - 1) / gran * gran / sizeof(T) * sizeof(T);
+      size_t gran = getMulticastGranularity(
+          nelems * sizeof(T), CU_MULTICAST_GRANULARITY_RECOMMENDED);
+      bytes_ =
+          (nelems * sizeof(T) + gran - 1) / gran * gran / sizeof(T) * sizeof(T);
       memory_ = gpuCallocPhysicalShared<T>(nelems, gran);
+      device_ptr_ = memory_.get();
+      host_ptr_ = nullptr;
       return;
     }
-#endif  // NVLS_SUPPORT
+#endif // NVLS_SUPPORT
     bytes_ = nelems * sizeof(T);
 #if defined(USE_HIP)
     memory_ = gpuCallocUncachedShared<T>(nelems);
+    device_ptr_ = memory_.get();
+    host_ptr_ = memory_.get();
 #else
     memory_ = gpuCallocShared<T>(nelems);
+    device_ptr_ = memory_.get();
+    host_ptr_ = nullptr;
 #endif
   }
 
   inline size_t nelems() const { return nelems_; }
   inline size_t bytes() const { return bytes_; }
-  inline ::std::shared_ptr<T> memory() { return memory_; }
-  inline T *data() { return memory_.get(); }
+  inline std::shared_ptr<T> memory() { return memory_; }
+  inline T *hostPtr() { return host_ptr_; }
+  inline T *devicePtr() { return device_ptr_; }
   inline int deviceId() const { return deviceId_; }
   inline bool isHostMemory() const { return host_memory_; }
 
- private:
+private:
   bool host_memory_;
   size_t nelems_;
   size_t bytes_;
   int deviceId_;
-  ::std::shared_ptr<T> memory_;
+  std::shared_ptr<T> memory_;
+  T *device_ptr_;
+  T *host_ptr_;
 };
 
-GpuBuffer<char> &getGlobalBuffers(int global_buffer_id);
-
-}  // namespace pccl
+} // namespace pccl
 #endif

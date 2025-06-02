@@ -16,12 +16,12 @@ struct TransportInfo {
     };
     // IB
     struct {
-      const IbMr* ibMr;
+      const IbMr *ibMr;
       IbMrInfo ibMrInfo;
     };
     // Sock
     struct {
-      SockMr* sockMr;
+      SockMr *sockMr;
       SockMrInfo sockMrInfo;
     };
     // Dma
@@ -41,9 +41,9 @@ struct TransportInfo {
 };
 
 struct RegisteredMemory::Impl {
-  void* host_ptr;
-  void* device_ptr;
-  void* origianl_ptr;
+  void *host_ptr;
+  void *device_ptr;
+  void *origianl_ptr;
   int original_rank;
   bool is_host_memory;
   bool is_lib_memory;
@@ -52,16 +52,16 @@ struct RegisteredMemory::Impl {
   uint64_t pidHash;
   bool isCuMemMapAlloc;
   TransportFlags transports;
-  ::std::vector<TransportInfo> transportInfos;
+  std::vector<TransportInfo> transportInfos;
 
   int fileDesc = -1;
 
   Impl(bool isHostMemory, bool isLibMemory, TransportFlags transports,
-       ConnectionContext::Impl& contextImpl);  // for local
-  Impl(const ::std::vector<char>& data);       // for remote
+       ConnectionContext::Impl &contextImpl); // for local
+  Impl(const std::vector<char> &data);        // for remote
   ~Impl();
 
-  const TransportInfo& getTransportInfo(Transport transport) const;
+  const TransportInfo &getTransportInfo(Transport transport) const;
 };
 
-}  // namespace pccl
+} // namespace pccl

@@ -5,6 +5,7 @@
 
 #include <bitset>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <string>
 #include <tuple>
@@ -14,9 +15,9 @@
 
 namespace pccl {
 
-::std::string version();
+std::string version();
 
-enum class ChannelType : int {
+enum class ChannelType : int8_t {
   NONE,
   MEMORY,
   PORT,
@@ -25,34 +26,51 @@ enum class ChannelType : int {
   ChannelTypeEnd,
 };
 
-enum class DeviceType : int {
+enum class DeviceType : int8_t {
   HOST,
   CUDA,
   HIP,
   DeviceTypeEnd,
 };
 
-enum class NetworkType : int {
+enum class BufferType : int8_t {
+  LIB,
+  HOST,
+  DEVICE,
+  TEMP,
+  BufferTypeEnd,
+};
+
+enum class NetworkType : int8_t {
   OVS_FLOW,
   NetworkTypeEnd,
 };
 
-enum class DataType : int {
-  INT32,
-  UINT32,
-  FLOAT16,
-  FLOAT32,
-  BFLOAT16,
+enum class DataType : int8_t {
+  I8,
+  I16,
+  I32,
+  I64,
+  U8,
+  U16,
+  U32,
+  U64,
+  FP16,
+  FP32,
+  BF16,
+  FP8_E4M3,
+  FP8_E5M2,
   DataTypeEnd,
 };
 
-enum class ReduceOpType : int {
+enum class ReduceOpType : int8_t {
   SUM,
   ReduceOpEnd,
 };
 
-enum class Transport : int {
+enum class Transport : int8_t {
   Unknown,
+  HostIpc,
   CudaIpc,
   IB,
   Ethernet,
@@ -60,42 +78,33 @@ enum class Transport : int {
   TransportEnd,
 };
 
-enum class OperationType : int {
+enum class OperationType : int16_t {
   NOP,
   BARRIER,
   PUT,
   GET,
-  COPY,
   SIGNAL,
   WAIT,
   FLUSH,
-  REDUCE,
-  REDUCE_WRITE,
-  READ_REDUCE,
-  READ_REDUCE_WRITE,
-  MULTI_READ_REDUCE_STORE,
-  NETCONF,
-  CHANNEL_FILP,
+  REDUCE,                  // locally
+  REDUCE_WRITE,            // reduce-copy-to-remote
+  READ_REDUCE,             // reduce-without-copy-to-remote
+  MULTI_READ_REDUCE_STORE, // atomic-reduce-and-wait-signal-copy-to-local
+  NETCONF,                 // network configuration
   OperationTypeEnd,
 };
 
 enum class PacketType {
-  LL16,
   Simple,
+  LL16,
   PacketTypeEnd,
 };
 
-const ::std::string TransportNames[] = {"UNK", "CUDA_IPC", "IB", "ETH", "NUM"};
-
-namespace detail {
-
 constexpr int TransportFlagsSize = static_cast<int>(Transport::TransportEnd);
-using TransportFlagsBase = ::std::bitset<TransportFlagsSize>;
+using TransportFlagsBase = std::bitset<TransportFlagsSize>;
 
-}  // namespace detail
-
-class TransportFlags : private detail::TransportFlagsBase {
- public:
+class TransportFlags : private TransportFlagsBase {
+public:
   TransportFlags() = default;
   TransportFlags(Transport transport);
   bool has(Transport transport) const;
@@ -103,24 +112,26 @@ class TransportFlags : private detail::TransportFlagsBase {
   bool any() const;
   bool all() const;
   size_t count() const;
-  TransportFlags& operator|=(TransportFlags other);
+  TransportFlags &operator|=(TransportFlags other);
   TransportFlags operator|(TransportFlags other) const;
   TransportFlags operator|(Transport transport) const;
-  TransportFlags& operator&=(TransportFlags other);
+  TransportFlags &operator&=(TransportFlags other);
   TransportFlags operator&(TransportFlags other) const;
   TransportFlags operator&(Transport transport) const;
-  TransportFlags& operator^=(TransportFlags other);
+  TransportFlags &operator^=(TransportFlags other);
   TransportFlags operator^(TransportFlags other) const;
   TransportFlags operator^(Transport transport) const;
   TransportFlags operator~() const;
   bool operator==(TransportFlags other) const;
   bool operator!=(TransportFlags other) const;
-  detail::TransportFlagsBase toBitset() const;
-  void set(size_t pos, bool value = true) { detail::TransportFlagsBase::set(pos, value); }
-  bool test(size_t pos) const { return detail::TransportFlagsBase::test(pos); }
+  TransportFlagsBase toBitset() const;
+  void set(size_t pos, bool value = true) {
+    TransportFlagsBase::set(pos, value);
+  }
+  bool test(size_t pos) const { return TransportFlagsBase::test(pos); }
 
- private:
-  TransportFlags(detail::TransportFlagsBase bitset);
+private:
+  TransportFlags(TransportFlagsBase bitset);
 };
 
 inline TransportFlags operator|(Transport transport1, Transport transport2) {
@@ -134,69 +145,74 @@ inline TransportFlags operator^(Transport transport1, Transport transport2) {
 }
 
 class RegisteredMemory {
- public:
-  RegisteredMemory(uint64_t bufferOffset, bool isHostMemory);
-  ~RegisteredMemory();
+public:
+  ~RegisteredMemory() = default;
   int rankOf() const;
-  void* hostPtr() const;
-  void* devicePtr() const;
-  size_t size();
-  TransportFlags transports();
-  ::std::vector<char> serialize();
-  static RegisteredMemory deserialize(const ::std::vector<char>& data);
+  void *hostPtr() const;
+  void *devicePtr() const;
+  size_t size() const;
+  BufferType type() const;
+  TransportFlags transports() const;
+  int tag() const;
 
- private:
+  std::vector<char> serialize() const;
+  static RegisteredMemory deserialize(const std::vector<char> &data);
+
+private:
   struct Impl;
-  RegisteredMemory(::std::shared_ptr<Impl> pimpl);
-  ::std::shared_ptr<Impl> pimpl_;
+  RegisteredMemory(std::shared_ptr<Impl> pimpl);
+  std::shared_ptr<Impl> pimpl_;
   friend class MemoryContext;
   friend class Connection;
 };
 
 class MemoryContext {
- public:
+public:
   MemoryContext();
   ~MemoryContext();
-  void registerMemory(RegisteredMemory memory);
-  RegisteredMemory getLibMemory();
-  RegisteredMemory allocateWorkspace(size_t size, bool isHostMemory, int tag);
-  RegisteredMemory getRemoteLibMemory(int rank);
-  RegisteredMemory getRemoteWorkspace(int tag, int rank);
-  void freeWorkspace(RegisteredMemory memory);
+  RegisteredMemory getPredefinedMemory(BufferType type);
+  RegisteredMemory allocateWorkSpace(size_t size, bool isHostMemory, int tag);
+  RegisteredMemory registerAsWorkSpace(void *buffer, bool isHostMemory, int tag,
+                                       Transport transport);
+  void unregister(RegisteredMemory memory);
+  std::vector<RegisteredMemory> waitWorkSpaceReady(std::vector<int> &ranks,
+                                                   int tag);
 
-  ::std::vector<char> serialize();
-
- private:
-  struct Impl;
-  ::std::shared_ptr<Impl> pimpl_;
+private:
+  class Impl;
+  std::unique_ptr<Impl> pimpl_;
 };
 
 class Endpoint {
- public:
-  Endpoint(Transport transport);
+public:
+  Endpoint();
   int rank() const;
-  Transport transport();
-  int maxWriteQueueSize();
-  ::std::vector<char> serialize();
-  static Endpoint deserialize(const ::std::vector<char>& data);
+  Transport transport() const;
+  int maxWriteQueueSize() const;
+  int maxCompleteQueueSize() const;
+  uint64_t latency() const;
+  uint64_t bandwidth() const;
+  std::vector<char> serialize() const;
+  static Endpoint deserialize(const std::vector<char> &data);
 
- private:
+private:
   struct Impl;
-  Endpoint(::std::shared_ptr<Impl> pimpl);
-  ::std::shared_ptr<Impl> pimpl_;
+  Endpoint(std::shared_ptr<Impl> pimpl);
+  std::shared_ptr<Impl> pimpl_;
   friend class Context;
   friend class Connection;
 };
 
 class Connection {
- public:
+public:
   Connection() = default;
   virtual ~Connection() = default;
-  virtual void flip() = 0;
-  virtual void write(RegisteredMemory dst, uint64_t dstOffset, RegisteredMemory src,
-                     uint64_t srcOffset, uint64_t size) = 0;
-  virtual void updateAndSync(RegisteredMemory dst, uint64_t dstOffset, RegisteredMemory src,
-                             uint64_t srcOffset, uint64_t size) = 0;
+  virtual void write(RegisteredMemory dst, uint64_t dstOffset,
+                     RegisteredMemory src, uint64_t srcOffset,
+                     uint64_t size) = 0;
+  virtual void updateAndSync(RegisteredMemory dst, uint64_t dstOffset,
+                             RegisteredMemory src, uint64_t srcOffset,
+                             uint64_t size) = 0;
   virtual void flush(int64_t timeoutUsec = 3e9) = 0;
   virtual Transport transport() = 0;
   virtual Transport remoteTransport() = 0;
@@ -206,30 +222,10 @@ class Connection {
   virtual uint64_t latency() = 0;
 };
 
-class ConnectionContext {
- public:
-  ConnectionContext();
-  ~ConnectionContext();
-  TransportFlags getChannelTypes(::std::shared_ptr<Connection> connection);
-  int remoteRankOf(::std::shared_ptr<Connection> connection);
-  ::std::shared_ptr<Connection> getConnection(Endpoint localEndpoint, Endpoint remoteEndpoint,
-                                              TransportFlags transport);
-  void connect(Endpoint localEndpoint, Endpoint remoteEndpoint);
-  void disconnect(Endpoint localEndpoint, Endpoint remoteEndpoint);
-  bool isConnected(Endpoint localEndpoint, Endpoint remoteEndpoint);
-
- private:
-  struct Impl;
-  ::std::unique_ptr<Impl> pimpl_;
-  friend class RegisteredMemory;
-  friend class Endpoint;
-};
-
 struct NetConfEntry {
-  sa_family_t family;
   union {
     struct {
-      uint32_t ip;
+      struct in_addr ip;
       uint16_t port;
     } v4;
     struct {
@@ -237,132 +233,170 @@ struct NetConfEntry {
       uint16_t port;
     } v6;
   };
+  sa_family_t family;
+};
+
+class Device {
+public:
+  Device(int id, int rank,
+         std::vector<std::tuple<TransportFlags, NetConfEntry>> endpoint_infos);
+  NetConfEntry getConfEntry(TransportFlags transport);
+  int uid() const;
+
+private:
+  struct Impl;
+  std::unique_ptr<Impl> pimpl_;
+};
+
+class Switch {
+public:
+  Switch(int id, const std::string &name, NetConfEntry network_address);
+  NetConfEntry getConfEntry() const;
+  int uid() const;
+
+private:
+  struct Impl;
+  std::unique_ptr<Impl> pimpl_;
+};
+
+class OpticalSwitch {
+public:
+  OpticalSwitch(int id, const std::string &name, NetConfEntry network_address);
+  NetConfEntry getConfEntry() const;
+  int uid() const;
+
+private:
+  struct Impl;
+  std::unique_ptr<Impl> pimpl_;
 };
 
 struct NetConfConnection {
   int src, dst;
   TransportFlags transport;
-  bool connected;
 };
 
-class Device {
- public:
-  Device(int id, int rank,
-         ::std::vector<::std::tuple<TransportFlags, NetConfEntry>> endpoint_infos);
-  NetConfEntry getConfEntry(TransportFlags transport);
-
- private:
-  struct Impl;
-  ::std::unique_ptr<Impl> pimpl_;
-};
-
-class Switch {
- public:
-  Switch(int id, const ::std::string& name, NetConfEntry network_address);
+class ClusterContext {
+public:
+  ClusterContext();
+  ~ClusterContext();
   NetConfEntry getConfEntry() const;
-  void command(const ::std::string& command);
-  void commit();
-
- private:
-  struct Impl;
-  ::std::unique_ptr<Impl> pimpl_;
-};
-
-class OpticalSwitch {
- public:
-  OpticalSwitch(int id, const ::std::string& name, NetConfEntry network_address);
-  NetConfEntry getConfEntry() const;
-  void command(const ::std::string& command);
-  void commit();
-
- private:
-  struct Impl;
-  ::std::unique_ptr<Impl> pimpl_;
-};
-
-class Cluster {
- public:
-  Cluster(::std::string& topoFile, NetworkType networkType);
-  NetConfEntry getConfEntry() const;
-  void registerPhase(int phase, ::std::vector<NetConfConnection>& connections);
+  void registerPhase(int phase, std::vector<NetConfConnection> &connections);
   int getPhase() const;
   void registerPhaseTransform(
       int prevPhase, int nextPhase,
-      ::std::vector<::std::tuple<NetConfConnection, ::std::string>>& commands);
+      std::vector<std::tuple<int, NetConfConnection, std::string>> &commands);
   void preCommit(int nextPhase);
   void commit();
 
- private:
-  struct Impl;
-  ::std::unique_ptr<Impl> pimpl_;
+private:
+  class Impl;
+  std::unique_ptr<Impl> pimpl_;
 };
 
-class Communicator {
- public:
-  Communicator();
-  ~Communicator();
-  ::std::vector<char> serialize();
-  void registerRemoteInfos(::std::vector<char>& data, int remoteRank);
-  ::std::vector<RegisteredMemory> getOperatorSpace(size_t bufferSize, int tag,
-                                                   ::std::vector<int>& ranks);
-  ::std::vector<Connection> getConnections(int tag, ::std::vector<int>& ranks);
-  void switchPhase(int phase);
-  ::std::shared_ptr<MemoryContext> memoryContext();
-  ::std::shared_ptr<ConnectionContext> connectionContext();
-  ::std::shared_ptr<Cluster> cluster();
+class ConnectionContext {
+public:
+  ConnectionContext();
+  ~ConnectionContext();
+  TransportFlags getChannelTypes(std::shared_ptr<Connection> connection);
+  int remoteRankOf(std::shared_ptr<Connection> connection);
+  std::shared_ptr<Connection> getConnection(Endpoint localEndpoint,
+                                            Endpoint remoteEndpoint,
+                                            TransportFlags transport);
+  void connect(Endpoint localEndpoint, Endpoint remoteEndpoint);
+  void disconnect(Endpoint localEndpoint, Endpoint remoteEndpoint);
+  bool isConnected(Endpoint localEndpoint, Endpoint remoteEndpoint);
+  bool notifyOperator(RegisteredMemory mem, std::vector<Endpoint> &endpoints);
 
- private:
+  std::shared_ptr<ClusterContext> clusterContext();
+
+private:
   struct Impl;
-  ::std::unique_ptr<Impl> pimpl_;
+  std::unique_ptr<Impl> pimpl_;
+  friend class RegisteredMemory;
+  friend class Endpoint;
+};
+
+struct Event {
+  std::function<void()> flush;
+  std::function<void()> wait;
+  std::function<void()> record;
+};
+
+struct Operation {
+  OperationType type;
+  int8_t num_op;
+  union {
+    struct {
+      uint32_t connections[Config::MAX_CHANNEL_PER_OPERATION];
+      uint32_t local_buffer_slices[Config::MAX_CHANNEL_PER_OPERATION];
+      uint32_t remote_buffer_slices[Config::MAX_CHANNEL_PER_OPERATION];
+    } putget;
+    struct {
+      uint32_t local_buffer_slices[Config::MAX_CHANNEL_PER_OPERATION];
+      uint32_t peer_buffer_slices[Config::MAX_CHANNEL_PER_OPERATION];
+      ReduceOpType reduce_op;
+    } memop;
+    struct {
+      uint32_t src_buffer_slices[Config::MAX_CHANNEL_PER_OPERATION];
+      uint32_t dst_buffer_slices[Config::MAX_CHANNEL_PER_OPERATION];
+      ReduceOpType reduce_op;
+    } reduceop;
+  } meta;
 };
 
 class Capsule {
- public:
-  Capsule(int id, ::std::string& path);
-  ::std::string name() const;
-  ::std::string collective() const;
+public:
+  Capsule(int id, std::string &path);
+  std::string name() const;
+  std::string collective() const;
 
- private:
+private:
   struct Impl;
-  ::std::unique_ptr<Impl> pimpl_;
+  std::unique_ptr<Impl> pimpl_;
 };
-
 class Operator {
- public:
-  Operator(::std::shared_ptr<Communicator> communicator, ::std::string& path);
-  ::std::string name() const;
-  ::std::string collective() const;
+public:
+  Operator(std::string &path);
+  ~Operator();
+  std::string name() const;
+  std::string collective() const;
 
   bool isInplace() const;
   bool isConfigurable() const;
-  void execute(int rank, void* input, void* output, DataType dtype, size_t inputSize,
-               size_t outputSize, void* stream = nullptr);
+  Event execute(int rank, void *input, void *output, DataType dtype,
+                size_t inputSize, size_t outputSize, Event &event, bool flush);
 
- public:
-  struct Impl;
-  ::std::unique_ptr<Impl> impl_;
+public:
+  class Impl;
+  std::unique_ptr<Impl> impl_;
 };
 
-template <class T>
-using DeviceHandle = typename T::DeviceHandle;
+class Communicator {
+public:
+  Communicator();
+  ~Communicator();
 
-template <typename T>
-DeviceHandle<::std::remove_reference_t<T>> deviceHandle(T&& t) {
-  return t.deviceHandle();
-}
+  std::shared_ptr<Endpoint> getEndpoint();
+  void registerRemoteInfos(std::shared_ptr<Endpoint> endpoint, int remoteRank);
 
-template <class T>
-using PacketPayload = typename T::Payload;
+  std::shared_ptr<MemoryContext> memoryContext();
+  std::shared_ptr<ConnectionContext> connectionContext();
 
-}  // namespace pccl
+  void registerOperator(std::shared_ptr<Operator> operator);
+
+private:
+  class Impl;
+  std::unique_ptr<Impl> pimpl_;
+};
+
+} // namespace pccl
 
 namespace std {
 
-template <>
-struct hash<pccl::TransportFlags> {
-  size_t operator()(const pccl::TransportFlags& flags) const {
+template <> struct hash<pccl::TransportFlags> {
+  size_t operator()(const pccl::TransportFlags &flags) const {
     return flags.toBitset().to_ullong();
   }
 };
 
-}  // namespace std
+} // namespace std

@@ -1,64 +1,63 @@
-# # Copyright (c) Microsoft Corporation.
-# # Licensed under the MIT License.
+from typing import List, Dict
 
+class ChunkUIDGen:
+    _uid = 0
+    @staticmethod
+    def get_uid() -> int:
+        ChunkUIDGen._uid += 1
+        return ChunkUIDGen._uid
+    
+    @staticmethod
+    def refresh():
+        ChunkUIDGen._uid = 0
 
-# from dataclasses import dataclass
+_named_chunk_context = None
 
+class NamedChunkContext:
+    _chunks: Dict[int, 'NamedChunk'] = {}
+    def __init__(self):
+        _named_chunk_context = self
+        ChunkUIDGen.refresh()
+    
+    def get_chunk(self, uid: int) -> 'NamedChunk':
+        return self._chunks[uid]
+    
+    def add_chunk(self, chunk: 'NamedChunk'):
+        self._chunks[chunk.uid] = chunk
+        
+class NamedChunk:
+    def __init__(self, src_rank: int, cur_rank: int, chunk_id: List[int]):
+        self.uid = ChunkUIDGen.get_uid()
+        self.src_rank = src_rank
+        self.cur_rank = cur_rank
+        self.chunk_id = chunk_id
+        self.parents = []
+        self.freed = False
+        global _named_chunk_context
+        _named_chunk_context.add_chunk(self)
 
-# @dataclass
-# class Chunk:
-#     origin_rank: int  # Rank the chunk initially started at
-#     origin_index: int  # Index the chunk initially started at
-#     dst_rank: int = -1
-#     dst_index: int = -1
+    def free(self):
+        assert self._is_existing(), f"Try to free a freed chunk: {self}"
+        self.freed = True
 
-#     def reduce(self, dst, chunk):
-#         if isinstance(chunk, ReduceChunk):
-#             return chunk.reduce(dst, self)
-#         elif isinstance(chunk, Chunk):
-#             chunks = [self, chunk]
-#             return ReduceChunk(dst, chunks)
-#         else:
-#             raise ValueError("Trying to reduce with chunk of None")
+    def send(self, dst:int) -> 'NamedChunk':
+        assert self._is_existing(), f"Try to send a freed chunk: {self}"
+        new_chunk = NamedChunk(self.src_rank, dst, self.chunk_id)
+        new_chunk.parents.append(self.uid)
+        return new_chunk
 
-#     def __hash__(self):
-#         return hash((self.origin_rank, self.origin_index))
+    def reduce(self, dst: int, chunk: 'NamedChunk') -> 'NamedChunk':
+        assert self._is_existing(), f"Try to reduce with a freed chunk: {self}"
+        assert chunk._is_existing(), f"Try to reduce with a freed chunk: {chunk}"
+        new_chunk = NamedChunk(self.src_rank, dst, self.chunk_id)
+        new_chunk.parents.extend([self.uid, chunk.uid])
+        return new_chunk
 
-#     def __eq__(self, other):
-#         return (
-#             isinstance(other, Chunk) and self.origin_rank == other.origin_rank and self.origin_index == other.origin_index
-#         )
-
-#     def __lt__(self, other):
-#         return self.origin_rank < other.origin_rank or (
-#             self.origin_rank == other.origin_rank and self.origin_index < other.origin_index
-#         )
-
-
-# @dataclass
-# class ReduceChunk:
-#     creation_rank: int  # Rank the Reduce Chunk is created. Necessary since the same ReduceChunk can be created on multiple ranks independently
-#     chunks: list  # List of chunks reduced
-
-#     def reduce(self, dst, chunk):
-#         if isinstance(chunk, ReduceChunk):
-#             chunks = self.chunks + chunk.chunks
-#         elif isinstance(chunk, Chunk):
-#             chunks = self.chunks + [chunk]
-#         else:
-#             raise ValueError("Trying to reduce with chunk of None")
-#         return ReduceChunk(self.creation_rank, chunks)
-
-#     def sort(self):
-#         self.chunks.sort()
-
-#     def __hash__(self):
-#         self.sort()
-#         return hash((self.creation_rank,) + tuple(self.chunks))
-
-#     # Two reduce chunks are equal if they contain the same list of
-#     # chunks being reduced
-#     def __eq__(self, other):
-#         self.sort()
-#         other.sort()
-#         return self.chunks == other.chunks
+    def _is_existing(self):
+        return not self.freed
+    
+    def __str__(self):
+        return f"NamedChunk({self.cur_rank})[{self.src_rank}, {self.chunk_id}]"
+    
+    def __repr__(self):
+        return self.__str__()

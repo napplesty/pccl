@@ -8,16 +8,37 @@
 
 namespace pccl {
 
+// class NvlsConnection : public Connection {
+// public:
+//   NvlsConnection(Endpoint remote, Endpoint local);
+//   ~NvlsConnection();
+
+//   void flip() override;
+//   void write(RegisteredMemory dst, uint64_t dstOffset, RegisteredMemory src,
+//              uint64_t srcOffset, uint64_t size) override;
+//   void updateAndSync(RegisteredMemory dst, uint64_t dstOffset,
+//                      RegisteredMemory src, uint64_t srcOffset,
+//                      uint64_t size) override;
+//   void flush(int64_t timeoutUsec = 3e9) override;
+//   Transport transport() override;
+//   Transport remoteTransport() override;
+//   int remoteRank() override;
+//   bool connected() override;
+//   uint64_t bandwidth() override;
+//   uint64_t latency() override;
+// };
+
 class CudaIpcConnection : public Connection {
- public:
-  CudaIpcConnection(TransportInfo info, int remoteRank);
+public:
+  CudaIpcConnection(Endpoint remote, Endpoint local);
   ~CudaIpcConnection();
 
   void flip() override;
-  void write(RegisteredMemory dst, uint64_t dstOffset, RegisteredMemory src, uint64_t srcOffset,
-             uint64_t size) override;
-  void updateAndSync(RegisteredMemory dst, uint64_t dstOffset, RegisteredMemory src,
-                     uint64_t srcOffset, uint64_t size) override;
+  void write(RegisteredMemory dst, uint64_t dstOffset, RegisteredMemory src,
+             uint64_t srcOffset, uint64_t size) override;
+  void updateAndSync(RegisteredMemory dst, uint64_t dstOffset,
+                     RegisteredMemory src, uint64_t srcOffset,
+                     uint64_t size) override;
   void flush(int64_t timeoutUsec = 3e9) override;
   Transport transport() override;
   Transport remoteTransport() override;
@@ -26,45 +47,47 @@ class CudaIpcConnection : public Connection {
   uint64_t bandwidth() override;
   uint64_t latency() override;
 
- private:
+private:
   TransportInfo info_;
   int remoteRank_;
 };
 
 class IbConnection : public Connection {
- public:
+public:
   IbConnection(TransportInfo info, int remoteRank);
   ~IbConnection();
 
   void flip() override;
-  void write(RegisteredMemory dst, uint64_t dstOffset, RegisteredMemory src, uint64_t srcOffset,
-             uint64_t size) override;
-  void updateAndSync(RegisteredMemory dst, uint64_t dstOffset, RegisteredMemory src,
-                     uint64_t srcOffset, uint64_t size) override;
+  void write(RegisteredMemory dst, uint64_t dstOffset, RegisteredMemory src,
+             uint64_t srcOffset, uint64_t size) override;
+  void updateAndSync(RegisteredMemory dst, uint64_t dstOffset,
+                     RegisteredMemory src, uint64_t srcOffset,
+                     uint64_t size) override;
   void flush(int64_t timeoutUsec = 3e9) override;
   Transport transport() override;
   Transport remoteTransport() override;
   int remoteRank() override;
   bool connected() override;
-  uint64_t bandwidth() override;
-  uint64_t latency() override;
+  uint64_t bandwidth() override; // bytes/sec
+  uint64_t latency() override;   // usec
 
- private:
+private:
   std::shared_ptr<IbCtx> ctx_;
   std::shared_ptr<IbQp> qp_;
   int remoteRank_;
 };
 
 class SockConnection : public Connection {
- public:
+public:
   SockConnection(TransportInfo info, int remoteRank);
   ~SockConnection();
 
   void flip() override;
-  void write(RegisteredMemory dst, uint64_t dstOffset, RegisteredMemory src, uint64_t srcOffset,
-             uint64_t size) override;
-  void updateAndSync(RegisteredMemory dst, uint64_t dstOffset, RegisteredMemory src,
-                     uint64_t srcOffset, uint64_t size) override;
+  void write(RegisteredMemory dst, uint64_t dstOffset, RegisteredMemory src,
+             uint64_t srcOffset, uint64_t size) override;
+  void updateAndSync(RegisteredMemory dst, uint64_t dstOffset,
+                     RegisteredMemory src, uint64_t srcOffset,
+                     uint64_t size) override;
   void flush(int64_t timeoutUsec = 3e9) override;
   Transport transport() override;
   Transport remoteTransport() override;
@@ -73,10 +96,10 @@ class SockConnection : public Connection {
   uint64_t bandwidth() override;
   uint64_t latency() override;
 
- private:
+private:
   std::shared_ptr<SockCtx> ctx_;
   std::shared_ptr<SockQp> qp_;
   int remoteRank_;
 };
 
-}  // namespace pccl
+} // namespace pccl

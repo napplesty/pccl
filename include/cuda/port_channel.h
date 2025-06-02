@@ -1,5 +1,6 @@
 #pragma once
 
+#include "cuda/internal_data_type.h"
 #include "cuda/proxy.h"
 #include "cuda/semaphore.h"
 
@@ -8,32 +9,13 @@ namespace pccl {
 struct BasePortChannel;
 struct PortChannel;
 
-using SemaphoreId = uint32_t;
-using MemoryId = uint32_t;
-using TriggerType = uint64_t;
-const TriggerType TriggerData = 0x1;
-const TriggerType TriggerSignal = 0x2;
-const TriggerType TriggerSync = 0x4;
-
 union ChannelTrigger {
   ProxyTrigger value;
-  struct {
-    uint64_t size : 32;
-    uint64_t srcOffset : 32;
-    uint64_t dstOffset : 32;
-    uint64_t src_memory_id : 3;
-    uint64_t dst_memory_id : 3;
-    uint64_t type : 4;
-    uint64_t chanId : 12;
-    uint64_t occupied : 1;  // 54-55
-    uint64_t reserved : 9;  // 55-64
-  } fields;
 #if defined(PCCL_CUDA_DEVICE_COMPILE)
   PCCL_CUDA_DEVICE_INLINE ChannelTrigger() {}
   PCCL_CUDA_DEVICE_INLINE ChannelTrigger(ProxyTrigger trigger) : value(std::move(trigger)) {}
-  PCCL_CUDA_DEVICE_INLINE ChannelTrigger(TriggerType type, MemoryId dstMemoryId, uint64_t dstOffset,
-                                         MemoryId srcMemoryId, uint64_t srcOffset, uint64_t size,
-                                         SemaphoreId chanId) {
+  PCCL_CUDA_DEVICE_INLINE ChannelTrigger(TriggerType type, MemoryId dstMemoryId, uint64_t dstOffset, MemoryId srcMemoryId, uint64_t srcOffset,
+                                         uint64_t size, SemaphoreId chanId) {
     constexpr uint64_t maskSize = (1ULL << 32) - 1;
     constexpr uint64_t maskSrcOffset = (1ULL << 32) - 1;
     constexpr uint64_t maskDstOffset = (1ULL << 32) - 1;
@@ -42,9 +24,7 @@ union ChannelTrigger {
     constexpr uint64_t maskType = (1ULL << 4) - 1;
     constexpr uint64_t maskChanId = (1ULL << 12) - 1;
     value.fst = (((srcOffset & maskSrcOffset) << 32) + (size & maskSize));
-    value.snd = (((((((((chanId & maskChanId) << 4) + ((uint64_t)type & maskType)) << 8) +
-                     (dstMemoryId & maskDstMemoryId))
-                    << 8) +
+    value.snd = (((((((((chanId & maskChanId) << 4) + ((uint64_t)type & maskType)) << 8) + (dstMemoryId & maskDstMemoryId)) << 8) +
                    (srcMemoryId & maskSrcMemoryId))
                   << 32) +
                  (dstOffset & maskDstOffset));
@@ -58,52 +38,36 @@ struct BasePortChannelDeviceHandle {
   FifoDeviceHandle fifo_;
 
   PCCL_CUDA_DEVICE_INLINE BasePortChannelDeviceHandle() {}
-  PCCL_CUDA_DEVICE_INLINE BasePortChannelDeviceHandle(SemaphoreId semaphoreId,
-                                                      Host2DeviceSemaphoreDeviceHandle semaphore,
-                                                      FifoDeviceHandle fifo)
+  PCCL_CUDA_DEVICE_INLINE BasePortChannelDeviceHandle(SemaphoreId semaphoreId, Host2DeviceSemaphoreDeviceHandle semaphore, FifoDeviceHandle fifo)
       : semaphoreId_(semaphoreId), semaphore_(semaphore), fifo_(fifo) {}
 
 #if defined(PCCL_CUDA_DEVICE_COMPILE)
-  PCCL_CUDA_DEVICE_INLINE void put(MemoryId dst, uint64_t dstOffset, MemoryId src,
-                                   uint64_t srcOffset, uint64_t size) {
-    fifo_.push(
-        ChannelTrigger(TriggerData, dst, dstOffset, src, srcOffset, size, semaphoreId_).value);
+  PCCL_CUDA_DEVICE_INLINE void put(MemoryId dst, uint64_t dstOffset, MemoryId src, uint64_t srcOffset, uint64_t size) {
+    fifo_.push(ChannelTrigger(TriggerData, dst, dstOffset, src, srcOffset, size, semaphoreId_).value);
   }
 
-  PCCL_CUDA_DEVICE_INLINE void put(MemoryId dst, MemoryId src, uint64_t offset, uint64_t size) {
-    put(dst, offset, src, offset, size);
-  }
+  PCCL_CUDA_DEVICE_INLINE void put(MemoryId dst, MemoryId src, uint64_t offset, uint64_t size) { put(dst, offset, src, offset, size); }
 
   PCCL_CUDA_DEVICE_INLINE void flush() {
+    uint64_t curFifoHead = fifo_.push(ChannelTrigger(TriggerSync, 0, 0, 0, 0, 1, semaphoreId_).value);
+    fifo_.sync(curFifoHead);
+  }
+
+  PCCL_CUDA_DEVICE_INLINE void putWithSignal(MemoryId dst, uint64_t dstOffset, MemoryId src, uint64_t srcOffset, uint64_t size) {
+    fifo_.push(ChannelTrigger(TriggerData | TriggerSignal, dst, dstOffset, src, srcOffset, size, semaphoreId_).value);
+  }
+
+  PCCL_CUDA_DEVICE_INLINE void putWithSignalAndFlush(MemoryId dst, uint64_t dstOffset, MemoryId src, uint64_t srcOffset, uint64_t size) {
     uint64_t curFifoHead =
-        fifo_.push(ChannelTrigger(TriggerSync, 0, 0, 0, 0, 1, semaphoreId_).value);
+        fifo_.push(ChannelTrigger(TriggerData | TriggerSignal | TriggerSync, dst, dstOffset, src, srcOffset, size, semaphoreId_).value);
     fifo_.sync(curFifoHead);
   }
 
-  PCCL_CUDA_DEVICE_INLINE void putWithSignal(MemoryId dst, uint64_t dstOffset, MemoryId src,
-                                             uint64_t srcOffset, uint64_t size) {
-    fifo_.push(ChannelTrigger(TriggerData | TriggerSignal, dst, dstOffset, src, srcOffset, size,
-                              semaphoreId_)
-                   .value);
-  }
-
-  PCCL_CUDA_DEVICE_INLINE void putWithSignalAndFlush(MemoryId dst, uint64_t dstOffset, MemoryId src,
-                                                     uint64_t srcOffset, uint64_t size) {
-    uint64_t curFifoHead = fifo_.push(ChannelTrigger(TriggerData | TriggerSignal | TriggerSync, dst,
-                                                     dstOffset, src, srcOffset, size, semaphoreId_)
-                                          .value);
-    fifo_.sync(curFifoHead);
-  }
-
-  PCCL_CUDA_DEVICE_INLINE void signal() {
-    fifo_.push(ChannelTrigger(TriggerSignal, 0, 0, 0, 0, 1, semaphoreId_).value);
-  }
+  PCCL_CUDA_DEVICE_INLINE void signal() { fifo_.push(ChannelTrigger(TriggerSignal, 0, 0, 0, 0, 1, semaphoreId_).value); }
 
   PCCL_CUDA_DEVICE_INLINE bool poll() { return semaphore_.poll(); }
 
-  PCCL_CUDA_DEVICE_INLINE void wait(int64_t maxSpinCount = 10000000) {
-    semaphore_.wait(maxSpinCount);
-  }
+  PCCL_CUDA_DEVICE_INLINE void wait(int64_t maxSpinCount = 10000000) { semaphore_.wait(maxSpinCount); }
 #endif
 };
 
@@ -113,10 +77,8 @@ struct PortChannelDeviceHandle : public BasePortChannelDeviceHandle {
 #if defined(PCCL_CUDA_DEVICE_COMPILE)
   PCCL_CUDA_HOST_DEVICE_INLINE PortChannelDeviceHandle() {};
 
-  PCCL_CUDA_HOST_DEVICE_INLINE PortChannelDeviceHandle(SemaphoreId semaphoreId,
-                                                       Host2DeviceSemaphoreDeviceHandle semaphore,
-                                                       FifoDeviceHandle fifo, MemoryId dst,
-                                                       MemoryId src)
+  PCCL_CUDA_HOST_DEVICE_INLINE PortChannelDeviceHandle(SemaphoreId semaphoreId, Host2DeviceSemaphoreDeviceHandle semaphore, FifoDeviceHandle fifo,
+                                                       MemoryId dst, MemoryId src)
       : BasePortChannelDeviceHandle(semaphoreId, semaphore, fifo), dst_(dst), src_(src) {}
 
   PCCL_CUDA_DEVICE_INLINE void put(uint64_t dstOffset, uint64_t srcOffset, uint64_t size) {
@@ -125,23 +87,17 @@ struct PortChannelDeviceHandle : public BasePortChannelDeviceHandle {
 
   PCCL_CUDA_DEVICE_INLINE void put(uint64_t offset, uint64_t size) { put(offset, offset, size); }
 
-  PCCL_CUDA_DEVICE_INLINE void putWithSignal(uint64_t dstOffset, uint64_t srcOffset,
-                                             uint64_t size) {
+  PCCL_CUDA_DEVICE_INLINE void putWithSignal(uint64_t dstOffset, uint64_t srcOffset, uint64_t size) {
     BasePortChannelDeviceHandle::putWithSignal(dst_, dstOffset, src_, srcOffset, size);
   }
 
-  PCCL_CUDA_DEVICE_INLINE void putWithSignal(uint64_t offset, uint64_t size) {
-    putWithSignal(offset, offset, size);
-  }
+  PCCL_CUDA_DEVICE_INLINE void putWithSignal(uint64_t offset, uint64_t size) { putWithSignal(offset, offset, size); }
 
-  PCCL_CUDA_DEVICE_INLINE void putWithSignalAndFlush(uint64_t dstOffset, uint64_t srcOffset,
-                                                     uint64_t size) {
+  PCCL_CUDA_DEVICE_INLINE void putWithSignalAndFlush(uint64_t dstOffset, uint64_t srcOffset, uint64_t size) {
     BasePortChannelDeviceHandle::putWithSignalAndFlush(dst_, dstOffset, src_, srcOffset, size);
   }
 
-  PCCL_CUDA_DEVICE_INLINE void putWithSignalAndFlush(uint64_t offset, uint64_t size) {
-    putWithSignalAndFlush(offset, offset, size);
-  }
+  PCCL_CUDA_DEVICE_INLINE void putWithSignalAndFlush(uint64_t offset, uint64_t size) { putWithSignalAndFlush(offset, offset, size); }
 #endif
 };
 
@@ -156,8 +112,7 @@ class BaseProxyService {
 class ProxyService : public BaseProxyService {
  public:
   ProxyService(size_t fifoSize = Config::FIFO_BUFFER_SIZE);
-  SemaphoreId buildAndAddSemaphore(Communicator& communicator,
-                                   std::shared_ptr<Connection> connection);
+  SemaphoreId buildAndAddSemaphore(Communicator& communicator, std::shared_ptr<Connection> connection);
   SemaphoreId addSemaphore(std::shared_ptr<Host2DeviceSemaphore> semaphore);
   MemoryId addMemory(RegisteredMemory memory);
   std::shared_ptr<Host2DeviceSemaphore> semaphore(SemaphoreId id) const;
@@ -184,8 +139,7 @@ struct BasePortChannel {
 
  public:
   BasePortChannel() = default;
-  BasePortChannel(SemaphoreId semaphoreId, std::shared_ptr<Host2DeviceSemaphore> semaphore,
-                  std::shared_ptr<Proxy> proxy);
+  BasePortChannel(SemaphoreId semaphoreId, std::shared_ptr<Host2DeviceSemaphore> semaphore, std::shared_ptr<Proxy> proxy);
   BasePortChannel(const BasePortChannel& other) = default;
   BasePortChannel& operator=(BasePortChannel& other) = default;
   using DeviceHandle = BasePortChannelDeviceHandle;
@@ -199,8 +153,7 @@ struct PortChannel : public BasePortChannel {
 
  public:
   PortChannel() = default;
-  PortChannel(SemaphoreId semaphoreId, std::shared_ptr<Host2DeviceSemaphore> semaphore,
-              std::shared_ptr<Proxy> proxy, MemoryId dst, MemoryId src);
+  PortChannel(SemaphoreId semaphoreId, std::shared_ptr<Host2DeviceSemaphore> semaphore, std::shared_ptr<Proxy> proxy, MemoryId dst, MemoryId src);
 
   PortChannel(const PortChannel& other) = default;
   PortChannel& operator=(PortChannel& other) = default;

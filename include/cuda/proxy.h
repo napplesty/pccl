@@ -8,11 +8,16 @@
 #include "fsche.h"
 namespace pccl {
 
+enum class ProxyHandlerResult {
+  OK,
+  ERROR,
+};
+
 class Proxy;
-using ProxyHandler = ::std::function<ProxyHandlerResult(ProxyTrigger)>;
+using ProxyHandler = std::function<ProxyHandlerResult(ProxyTrigger)>;
 
 class Proxy {
- public:
+public:
   Proxy(ProxyHandler handler, size_t fifoSize = Config::FIFO_BUFFER_SIZE);
   ~Proxy();
 
@@ -20,9 +25,9 @@ class Proxy {
   void stop();
   Fifo &fifo();
 
- private:
+private:
   struct Impl;
-  ::std::unique_ptr<Impl> pimpl;
+  std::unique_ptr<Impl> pimpl;
 };
 
-}  // namespace pccl
+} // namespace pccl

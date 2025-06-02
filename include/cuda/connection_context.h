@@ -17,7 +17,7 @@ struct ConnectionContext::Impl {
   std::shared_ptr<IbCtx> ib_ctx_1;
   std::shared_ptr<SockCtx> sock_ctx_0;
   std::shared_ptr<SockCtx> sock_ctx_1;
-  ::std::shared_ptr<CudaStreamWithFlags> ipcStream_;
+  std::shared_ptr<CudaStreamWithFlags> ipcStream_;
   CUmemGenericAllocationHandle mcHandle_;
   Impl();
   void flip();
@@ -25,4 +25,4 @@ struct ConnectionContext::Impl {
   std::shared_ptr<IbCtx> getSockContext(Transport sockTransport, bool active);
 };
 
-}  // namespace pccl
+} // namespace pccl

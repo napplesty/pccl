@@ -1,58 +1,105 @@
-# # Copyright (c) Microsoft Corporation.
-# # Licensed under the MIT License.
+from enum import Enum
+from typing import Optional
 
-# from enum import Enum
+class BufferType(Enum):
+    LIB = 0
+    HOST = 1
+    DEVICE = 2
 
+class Buffer:
+    def __init__(self, bufferType: BufferType, size: int):
+        self.bufferType = bufferType
+        self.size = size
 
-# # Scratch buffer slice with manual indexing
-# class BufferSlice:
-#     def __init__(self, buf, name):
-#         self.name = name
-#         self.buf = buf
-#         self.offset = -1  # Offset into the global scratch buffer
-#         self.chunks = []
+class BufferSlice:
+    def __init__(self, bufferType: BufferType, offset: int, size: int):
+        if offset < 0:
+            raise ValueError("offset must be non-negative")
+        if size <= 0:
+            raise ValueError("size must be positive")
+        
+        self.bufferType = bufferType
+        self.offset = offset
+        self.size = size
 
-#     # Returns the global index into the scratch buffer
-#     def get_global_index(self, index):
-#         assert self.offset > -1, "set_offset needs to be called first"
-#         return self.offset + index
+    @property
+    def end(self) -> int:
+        return self.offset + self.size
 
-#     def get_buffer(self):
-#         return self.buf
+    @property
+    def is_empty(self) -> bool:
+        return self.size == 0
 
-#     def instance_size(self):
-#         return len(self.chunks)
+    def contains_offset(self, offset: int) -> bool:
+        return self.offset <= offset < self.end
 
-#     def set_offset(self, offset):
-#         self.offset = offset
+    def contains_slice(self, other: 'BufferSlice') -> bool:
+        if self.bufferType != other.bufferType:
+            return False
+        return self.offset <= other.offset and self.end >= other.end
 
-#     def __getitem__(self, index):
-#         return self.chunks[index]
+    def intersected(self, other: 'BufferSlice') -> bool:
+        if self.bufferType != other.bufferType:
+            return False
+        return self.offset < other.end and self.end > other.offset
 
-#     def __setitem__(self, index, value):
-#         current_size = len(self.chunks)
-#         while index > current_size:
-#             self.chunks.append(None)
-#             current_size = len(self.chunks)
-#         if index == current_size:
-#             self.chunks.append(value)
-#         else:
-#             self.chunks[index] = value
+    def intersection(self, other: 'BufferSlice') -> Optional['BufferSlice']:
+        if not self.intersected(other):
+            return None
+        
+        start = max(self.offset, other.offset)
+        end = min(self.end, other.end)
+        return BufferSlice(self.bufferType, start, end - start)
 
-#     def __len__(self):
-#         return len(self.chunks)
+    def adjacent(self, other: 'BufferSlice') -> bool:
+        if self.bufferType != other.bufferType:
+            return False
+        return self.end == other.offset or other.end == self.offset
 
+    def can_merge(self, other: 'BufferSlice') -> bool:
+        return self.intersected(other) or self.adjacent(other)
 
-# class Buffer(Enum):
-#     input = "i"
-#     output = "o"
-#     scratch = "s"
+    def merge(self, other: 'BufferSlice') -> 'BufferSlice':
+        if not self.can_merge(other):
+            raise ValueError("Can not merge non-intersected and non-adjacent slices")
+        
+        start = min(self.offset, other.offset)
+        end = max(self.end, other.end)
+        return BufferSlice(self.bufferType, start, end - start)
 
-#     def __str__(self):
-#         return self.value
+    def split(self, split_offset: int) -> tuple['BufferSlice', 'BufferSlice']:
+        if not self.contains_offset(split_offset):
+            raise ValueError("Split offset must be in the range of the slice")
+        
+        if split_offset == self.offset:
+            raise ValueError("Can not split at the start of the slice")
+        
+        left_size = split_offset - self.offset
+        right_size = self.end - split_offset
+        
+        left = BufferSlice(self.bufferType, self.offset, left_size)
+        right = BufferSlice(self.bufferType, split_offset, right_size)
+        
+        return left, right
 
-#     def __lt__(self, other):
-#         return self.value < other.value
+    def slice(self, start_offset: int, size: int) -> 'BufferSlice':
+        if start_offset < self.offset or start_offset + size > self.end:
+            raise ValueError("Slice out of range")
+        
+        return BufferSlice(self.bufferType, start_offset, size)
 
-#     def __gt__(self, other):
-#         return self.value < other.value
+    def __eq__(self, other) -> bool:
+        if not isinstance(other, BufferSlice):
+            return False
+        return (self.bufferType == other.bufferType and 
+                self.offset == other.offset and 
+                self.size == other.size)
+
+    def __hash__(self) -> int:
+        return hash((self.bufferType, self.offset, self.size))
+
+    def __str__(self) -> str:
+        return f"BufferSlice({self.bufferType.name}, offset={self.offset}, size={self.size})"
+
+    def __repr__(self) -> str:
+        return f"BufferSlice(BufferType.{self.bufferType.name}, {self.offset}, {self.size})"

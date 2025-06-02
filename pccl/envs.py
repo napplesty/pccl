@@ -9,7 +9,7 @@ USE_UCX = os.path.exists(UCX_HOME)
 USE_IBVERBS = True
 
 CURRENT_DIR = Path(__file__).parent.parent.absolute().as_posix()
-USE_CUDA = torch.cuda.is_available() and torch.version.cuda is not None
+USE_CUDA = True #torch.cuda.is_available() and torch.version.cuda is not None
 USE_HIP  = torch.cuda.is_available() and torch.version.hip is not None
 CUDA_VERSION = None
 HIP_VERSION = None

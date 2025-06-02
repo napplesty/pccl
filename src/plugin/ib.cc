@@ -51,10 +51,8 @@ uint32_t IbMr::getLkey() const { return this->mr->lkey; }
 
 IbQp::IbQp(ibv_context *ctx, ibv_pd *pd, int port, int maxCqSize,
            int maxCqPollNum, int maxSendWr, int maxRecvWr, int maxWrPerSend)
-    : numSignaledPostedItems(0),
-      numSignaledStagedItems(0),
-      maxCqPollNum(maxCqPollNum),
-      maxWrPerSend(maxWrPerSend) {
+    : numSignaledPostedItems(0), numSignaledStagedItems(0),
+      maxCqPollNum(maxCqPollNum), maxWrPerSend(maxWrPerSend) {
   this->cq = IBVerbs::ibv_create_cq(ctx, maxCqSize, nullptr, nullptr, 0);
   if (this->cq == nullptr) {
     std::stringstream err;
@@ -82,7 +80,7 @@ IbQp::IbQp(ibv_context *ctx, ibv_pd *pd, int port, int maxCqSize,
   }
 
   struct ibv_port_attr portAttr;
-  if (IBVerbs::ibv_query_port_w(ctx, port, &portAttr) != 0) {
+  if (IBVerbs::ibv_query_port_w(ctx, port, &portAttr)) {
     std::stringstream err;
     err << "ibv_query_port failed (errno " << errno << ")";
     throw std::runtime_error(err.str());
@@ -219,7 +217,8 @@ void IbQp::stageLoad(const IbMr *mr, const IbMrInfo &info, size_t size,
   wrInfo.sge->addr = (uint64_t)(mr->getBuff()) + dstOffset;
   wrInfo.sge->length = size;
   wrInfo.sge->lkey = mr->getLkey();
-  if (signaled) (this->numSignaledStagedItems)++;
+  if (signaled)
+    (this->numSignaledStagedItems)++;
 }
 
 void IbQp::stageSend(const IbMr *mr, const IbMrInfo &info, uint32_t size,
@@ -234,7 +233,8 @@ void IbQp::stageSend(const IbMr *mr, const IbMrInfo &info, uint32_t size,
   wrInfo.sge->addr = (uint64_t)(mr->getBuff()) + srcOffset;
   wrInfo.sge->length = size;
   wrInfo.sge->lkey = mr->getLkey();
-  if (signaled) (this->numSignaledStagedItems)++;
+  if (signaled)
+    (this->numSignaledStagedItems)++;
 }
 
 void IbQp::stageAtomicAdd(const IbMr *mr, const IbMrInfo &info, uint64_t wrId,
@@ -247,9 +247,10 @@ void IbQp::stageAtomicAdd(const IbMr *mr, const IbMrInfo &info, uint64_t wrId,
   wrInfo.wr->wr.atomic.rkey = info.rkey;
   wrInfo.wr->wr.atomic.compare_add = addVal;
   wrInfo.sge->addr = (uint64_t)(mr->getBuff());
-  wrInfo.sge->length = sizeof(uint64_t);  // atomic op is always on uint64_t
+  wrInfo.sge->length = sizeof(uint64_t); // atomic op is always on uint64_t
   wrInfo.sge->lkey = mr->getLkey();
-  if (signaled) (this->numSignaledStagedItems)++;
+  if (signaled)
+    (this->numSignaledStagedItems)++;
 }
 
 void IbQp::stageSendWithImm(const IbMr *mr, const IbMrInfo &info, uint32_t size,
@@ -266,7 +267,8 @@ void IbQp::stageSendWithImm(const IbMr *mr, const IbMrInfo &info, uint32_t size,
   wrInfo.sge->addr = (uint64_t)(mr->getBuff()) + srcOffset;
   wrInfo.sge->length = size;
   wrInfo.sge->lkey = mr->getLkey();
-  if (signaled) (this->numSignaledStagedItems)++;
+  if (signaled)
+    (this->numSignaledStagedItems)++;
 }
 
 void IbQp::postSend() {
@@ -384,6 +386,6 @@ const IbMr *IbCtx::registerMr(void *buff, std::size_t size) {
   return mrs.back().get();
 }
 
-}  // namespace pccl
+} // namespace pccl
 
-#endif  // USE_IBVERBS
+#endif // USE_IBVERBS
