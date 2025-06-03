@@ -170,28 +170,11 @@ private:
   friend class Connection;
 };
 
-class MemoryContext {
-public:
-  ~MemoryContext();
-  RegisteredMemory getPredefinedMemory(BufferType type);
-  RegisteredMemory allocateWorkSpace(size_t size, bool isHostMemory, int tag);
-  RegisteredMemory registerAsWorkSpace(void *buffer, bool isHostMemory, int tag,
-                                       Transport transport);
-  void unregister(RegisteredMemory memory);
-  std::vector<RegisteredMemory> waitWorkSpaceReady(std::vector<int> &ranks,
-                                                   int tag);
-
-private:
-  friend class Communicator;
-  MemoryContext(std::shared_ptr<Communicator> communicator);
-  class Impl;
-  std::unique_ptr<Impl> pimpl_;
-};
-
 class Endpoint {
 public:
   int rank() const;
   Transport transport() const;
+  RegisteredMemory getRegisteredMemory(BufferType type);
   int maxWriteQueueSize() const;
   int maxCompleteQueueSize() const;
   uint64_t latency() const;
@@ -209,10 +192,35 @@ private:
   friend class Connection;
 };
 
+class MemoryContext {
+public:
+  ~MemoryContext();
+  std::shared_ptr<Endpoint> getEndpoint(int rank);
+  void registerEndpoint(std::shared_ptr<Endpoint> endpoint, int remoteRank);
+  RegisteredMemory getPredefinedMemory(BufferType type);
+  RegisteredMemory allocateWorkSpace(size_t size, bool isHostMemory, int tag);
+  RegisteredMemory registerAsWorkSpace(void *buffer, bool isHostMemory, int tag,
+                                       Transport transport);
+  void unregister(RegisteredMemory memory);
+  std::vector<RegisteredMemory> waitWorkSpaceReady(std::vector<int> &ranks,
+                                                   int tag);
+
+  // 静态工厂方法用于创建RegisteredMemory
+  static RegisteredMemory
+  createRegisteredMemory(std::shared_ptr<RegisteredMemory::Impl> impl);
+
+private:
+  friend class Communicator;
+  MemoryContext(std::shared_ptr<Communicator> communicator);
+  class Impl;
+  std::unique_ptr<Impl> pimpl_;
+};
+
 class Connection {
 public:
   Connection() = default;
   virtual ~Connection() = default;
+  virtual void switchBackend(void *backend) = 0;
   virtual void write(RegisteredMemory dst, uint64_t dstOffset,
                      RegisteredMemory src, uint64_t srcOffset,
                      uint64_t size) = 0;
@@ -302,8 +310,8 @@ private:
 class ConnectionContext {
 public:
   ~ConnectionContext();
-  void registerEndpoint(int rank, Endpoint endpoint);
-  Endpoint getEndpoint(int rank);
+  std::shared_ptr<Endpoint> getEndpoint(int rank);
+  void registerEndpoint(std::shared_ptr<Endpoint> endpoint, int remoteRank);
   TransportFlags getChannelTypes(std::shared_ptr<Connection> connection);
   int remoteRankOf(std::shared_ptr<Connection> connection);
   std::shared_ptr<Connection> getConnection(Endpoint localEndpoint,
@@ -356,25 +364,16 @@ struct Operation {
   } meta;
 };
 
-class Capsule {
-public:
-  Capsule(int id, std::string &path);
-  std::string name() const;
-  std::string collective() const;
-
-private:
-  struct Impl;
-  std::unique_ptr<Impl> pimpl_;
-};
-
 class Operator {
 public:
   ~Operator();
+
   std::string name() const;
   std::string collective() const;
 
   bool isInplace() const;
   bool isConfigurable() const;
+
   Event execute(int rank, void *input, void *output, DataType dtype,
                 size_t inputSize, size_t outputSize, Event &event, bool flush,
                 uint64_t tag);
@@ -390,14 +389,15 @@ public:
   Communicator();
   ~Communicator();
 
-  std::shared_ptr<Endpoint> getEndpoint();
-  void registerRemoteInfos(std::shared_ptr<Endpoint> endpoint, int remoteRank);
+  std::shared_ptr<Endpoint> getEndpoint(int rank);
+  void registerEndpoint(std::shared_ptr<Endpoint> endpoint, int remoteRank);
 
   std::shared_ptr<MemoryContext> memoryContext();
   std::shared_ptr<ConnectionContext> connectionContext();
   std::shared_ptr<ClusterContext> clusterContext();
 
   std::shared_ptr<Operator> registerOperator(const std::string &operator_path);
+  void registerClusterPhase(const std::string &cluster_config_path);
 
 private:
   class Impl;
@@ -407,7 +407,6 @@ private:
 } // namespace pccl
 
 namespace std {
-
 template <> struct hash<pccl::TransportFlags> {
   size_t operator()(const pccl::TransportFlags &flags) const {
     return flags.toBitset().to_ullong();

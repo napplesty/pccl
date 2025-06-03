@@ -148,6 +148,7 @@ public:
   std::shared_ptr<SockQp> createQp(int max_cq_size, int max_wr);
   std::shared_ptr<SockMr> registerMr(void *buff, size_t size,
                                      bool is_host_memory);
+  void unregisterMr(int64_t mr_id);
 
 private:
   friend class SockQp;

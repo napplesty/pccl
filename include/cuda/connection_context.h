@@ -1,8 +1,6 @@
 #pragma once
 
 #include <memory>
-#include <unordered_map>
-#include <vector>
 
 #include "device.h"
 #include "plugin/ib.h"
@@ -20,7 +18,6 @@ struct ConnectionContext::Impl {
   std::shared_ptr<CudaStreamWithFlags> ipcStream_;
   CUmemGenericAllocationHandle mcHandle_;
   Impl();
-  void flip();
   std::shared_ptr<IbCtx> getIbContext(Transport ibTransport, bool active);
   std::shared_ptr<IbCtx> getSockContext(Transport sockTransport, bool active);
 };

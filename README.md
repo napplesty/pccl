@@ -1,93 +1,148 @@
 # PCCL Runtime 实现说明
 
-本文档说明PCCL Runtime 各组件的作用和实现思路。
+PCCL是一个高性能的并行集合通信库，设计用于支持分布式深度学习和高性能计算应用。它提供了类似于NCCL的功能，但具有更灵活的架构和更多的传输协议支持。
 
-## 整体架构
+## 主要特性
 
-PCCL（Programmable Collective Communication Library）是一个分布式集合通信库，类似于NCCL，但支持可编程的网络拓扑和动态重配置。
+- **多种传输协议支持**
+  - Host IPC：用于主机内存之间的高速通信
+  - CUDA IPC：用于同节点GPU之间的直接内存访问
+  - InfiniBand (IB)：用于跨节点的高速RDMA通信
+  - Ethernet：用于标准以太网环境
+  - NVLS (NVIDIA Link Switch)：用于最新GPU的高速互连
 
-## 核心组件
+- **灵活的内存管理**
+  - 预定义的内存缓冲区（LIB、HOST、DEVICE）
+  - 动态工作空间分配
+  - 支持主机和设备内存的统一管理
 
-### 1. TransportFlags - 传输类型标志
-- **作用**: 管理不同传输方式的标志位（IB、Ethernet、CUDA_IPC、NVLS等）
-- **实现**: 基于std::bitset的位操作，支持传输类型的组合和查询
-- **关键方法**: 位运算操作符、has()检查特定传输类型
+- **丰富的集合通信操作**
+  - AllReduce：所有进程的归约操作
+  - Broadcast：广播操作
+  - AllGather：全收集操作
+  - 可扩展的操作符框架
 
-### 2. RegisteredMemory - 注册内存
-- **作用**: 管理跨进程共享的内存缓冲区，支持主机和设备内存
-- **实现**: 记录内存地址、大小、所有者rank和支持的传输类型
-- **关键功能**: 序列化/反序列化用于跨进程传输内存信息
+- **高级特性**
+  - 网络拓扑感知的优化
+  - 动态网络配置切换
+  - 性能分析支持
 
-### 3. MemoryContext - 内存上下文
-- **作用**: 管理内存分配、注册和释放，维护内存池
-- **实现**: 协调多进程间的内存分配，支持工作空间的同步分配
-- **关键方法**: 
-  - `allocateWorkspace()`: 分配集合操作的工作内存
-  - `waitWorkSpace()`: 等待其他进程完成内存分配
-  - `getRemoteMemory()`: 获取远程进程的内存引用
+## 构建和安装
 
-### 4. Endpoint - 通信端点
-- **作用**: 表示网络通信的端点，包含rank、网络地址和传输能力
-- **实现**: 封装进程的网络身份信息，支持序列化传输
-- **关键信息**: rank、传输类型、网络地址、队列大小
+### 依赖项
 
-### 5. Device/Switch/OpticalSwitch - 网络设备
-- **作用**: 表示集群中的计算设备和网络交换设备
-- **实现**: 
-  - Device: GPU/CPU设备，配置多种传输端点
-  - Switch: 网络交换机，支持NetConf协议配置
-  - OpticalSwitch: 光交换机，支持光路动态切换
-- **NetConf支持**: 通过command()和commit()实现网络设备的动态配置
+- CMake >= 3.18
+- C++17兼容的编译器
+- CUDA >= 11.0（可选，用于GPU支持）
+- nlohmann/json
+- pybind11（可选，用于Python绑定）
 
-### 6. ClusterContext - 集群上下文
-- **作用**: 管理集群拓扑和通信阶段的切换
-- **实现**: 
-  - 注册不同通信阶段的网络连接需求
-  - 支持阶段间的网络重配置
-  - 协调网络设备的配置切换
-- **阶段管理**: 
-  - `registerPhase()`: 注册阶段的连接需求
-  - `registerPhaseTransform()`: 注册阶段转换的配置命令
-  - `preCommit()/commit()`: 分阶段提交网络配置
+### 构建步骤
 
-### 7. ConnectionContext - 连接上下文
-- **作用**: 管理进程间的网络连接池
-- **实现**: 
-  - 维护连接的建立、查询和释放
-  - 支持多种传输类型的连接
-  - 集成集群上下文进行拓扑管理
-- **连接管理**: 
-  - `getConnection()`: 获取或创建连接
-  - `connect()/disconnect()`: 管理连接生命周期
-  - `isConnected()`: 查询连接状态
+```bash
+mkdir build && cd build
+cmake .. -DUSE_CUDA=ON -DBUILD_EXAMPLES=ON
+make -j$(nproc)
+sudo make install
+```
 
-### 8. Communicator - 通信器
-- **作用**: 分布式通信的主要接口，协调内存和连接管理
-- **实现**: 
-  - 整合MemoryContext和ConnectionContext
-  - 管理远程进程信息的注册和同步
-  - 支持通信阶段的切换
-- **核心功能**: 
-  - `registerRemoteInfos()`: 注册远程进程端点信息
-  - `getOperatorSpace()`: 为集合操作分配协调内存
-  - `switchPhase()`: 切换通信阶段和网络拓扑
+### 配置选项
 
-### 9. Capsule - 操作胶囊
-- **作用**: 封装预编译的集合通信算法
-- **实现**: 从文件加载算法实现和元数据
-- **用途**: 支持算法的模块化和可插拔部署
+- `USE_CUDA`：启用CUDA支持（默认：ON）
+- `USE_HIP`：启用AMD HIP支持（默认：OFF）
+- `BUILD_EXAMPLES`：构建示例程序（默认：ON）
+- `BUILD_TESTS`：构建测试（默认：ON）
 
-### 10. Operator - 集合通信操作符
-- **作用**: 执行具体的集合通信操作（AllReduce、AllGather等）
-- **实现**: 
-  - 基于Communicator和算法实现
-  - 支持原地操作和可配置参数
-  - 返回Event对象用于异步操作管理
-- **执行流程**: 
-  - `execute()`: 执行集合通信算法
-  - 返回Event包含flush、wait、record操作用于同步和性能分析
+## 使用示例
 
-## 关键特性
+### 基本的AllReduce操作
+
+```cpp
+#include <pccl/runtime.h>
+#include <vector>
+
+using namespace pccl;
+
+int main() {
+    // 创建通信器
+    auto comm = std::make_shared<Communicator>();
+    
+    // 注册操作符
+    auto allreduce = comm->registerOperator("allreduce_ring.op");
+    
+    // 准备数据
+    std::vector<float> data(1024, 1.0f);
+    
+    // 执行AllReduce
+    Event event;
+    auto result = allreduce->execute(
+        rank, data.data(), data.data(),
+        DataType::FP32, data.size() * sizeof(float),
+        data.size() * sizeof(float), event, true, 0
+    );
+    
+    // 等待完成
+    result.wait();
+    
+    return 0;
+}
+```
+
+### 环境变量配置
+
+PCCL使用环境变量进行配置：
+
+- `PCCL_RANK`：当前进程的rank
+- `PCCL_WORLD_SIZE`：总进程数
+- `PCCL_LOCAL_RANK`：节点内的本地rank
+- `PCCL_SOCKET_ADDR`：通信地址
+- `PCCL_SOCKET_PORT`：通信端口
+- `PCCL_IB_DEVICE0`：InfiniBand设备0
+- `PCCL_IB_DEVICE1`：InfiniBand设备1
+- `PCCL_ENABLE_TRANSPORT_LIST`：启用的传输协议列表
+
+### 运行多进程示例
+
+```bash
+# 设置环境变量
+export PCCL_WORLD_SIZE=4
+
+# 在不同终端运行
+PCCL_RANK=0 ./build/examples/simple_allreduce
+PCCL_RANK=1 ./build/examples/simple_allreduce
+PCCL_RANK=2 ./build/examples/simple_allreduce
+PCCL_RANK=3 ./build/examples/simple_allreduce
+```
+
+## 架构概述
+
+PCCL采用模块化设计，主要组件包括：
+
+1. **Communicator**：核心通信管理器
+2. **MemoryContext**：内存管理上下文
+3. **ConnectionContext**：连接管理上下文
+4. **ClusterContext**：集群拓扑管理
+5. **Operator**：集合通信操作执行器
+6. **Connection**：底层传输连接抽象
+
+## 性能优化
+
+- 使用Ring算法优化AllReduce操作
+- 支持NVLS多播加速
+- 自动选择最优传输协议
+- 内存池管理减少分配开销
+
+## 贡献指南
+
+欢迎贡献代码！请遵循以下步骤：
+
+1. Fork项目
+2. 创建特性分支 (`git checkout -b feature/amazing-feature`)
+3. 提交更改 (`git commit -m 'Add amazing feature'`)
+4. 推送到分支 (`git push origin feature/amazing-feature`)
+5. 创建Pull Request
+
+## 许可证
 
 ### 1. 可编程网络拓扑
 - 支持通过NetConf协议动态配置网络设备

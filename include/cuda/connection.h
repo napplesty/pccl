@@ -1,5 +1,4 @@
 #pragma once
-#pragma once
 
 #include "cuda/registered_memory.h"
 #include "plugin/ib.h"
@@ -13,7 +12,6 @@ namespace pccl {
 //   NvlsConnection(Endpoint remote, Endpoint local);
 //   ~NvlsConnection();
 
-//   void flip() override;
 //   void write(RegisteredMemory dst, uint64_t dstOffset, RegisteredMemory src,
 //              uint64_t srcOffset, uint64_t size) override;
 //   void updateAndSync(RegisteredMemory dst, uint64_t dstOffset,
@@ -33,7 +31,7 @@ public:
   CudaIpcConnection(Endpoint remote, Endpoint local);
   ~CudaIpcConnection();
 
-  void flip() override;
+  void switchBackend(void *backend) override;
   void write(RegisteredMemory dst, uint64_t dstOffset, RegisteredMemory src,
              uint64_t srcOffset, uint64_t size) override;
   void updateAndSync(RegisteredMemory dst, uint64_t dstOffset,
@@ -57,7 +55,7 @@ public:
   IbConnection(TransportInfo info, int remoteRank);
   ~IbConnection();
 
-  void flip() override;
+  void switchBackend(void *backend) override;
   void write(RegisteredMemory dst, uint64_t dstOffset, RegisteredMemory src,
              uint64_t srcOffset, uint64_t size) override;
   void updateAndSync(RegisteredMemory dst, uint64_t dstOffset,
@@ -72,8 +70,8 @@ public:
   uint64_t latency() override;   // usec
 
 private:
-  std::shared_ptr<IbCtx> ctx_;
-  std::shared_ptr<IbQp> qp_;
+  IbCtx *ctx_;
+  IbQp *qp_;
   int remoteRank_;
 };
 
@@ -82,7 +80,7 @@ public:
   SockConnection(TransportInfo info, int remoteRank);
   ~SockConnection();
 
-  void flip() override;
+  void switchBackend(void *backend) override;
   void write(RegisteredMemory dst, uint64_t dstOffset, RegisteredMemory src,
              uint64_t srcOffset, uint64_t size) override;
   void updateAndSync(RegisteredMemory dst, uint64_t dstOffset,
@@ -97,8 +95,8 @@ public:
   uint64_t latency() override;
 
 private:
-  std::shared_ptr<SockCtx> ctx_;
-  std::shared_ptr<SockQp> qp_;
+  SockCtx *ctx_;
+  SockQp *qp_;
   int remoteRank_;
 };
 

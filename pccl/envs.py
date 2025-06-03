@@ -39,18 +39,20 @@ CSRCS = [
     "src/component/endpoint.cc",
     "src/component/operator.cc",
     "src/component/profile.cc",
-    "src/component/proxy.cc",
     "src/plugin/ib.cc",
     "src/plugin/sock.cc",
 ]
 
 CUSRCS = [
+    "src/cuda/fsche.cu",
+    "src/cuda/proxy.cu",
     "src/cuda/reduce_kernel.cu",
     "src/cuda/kernel.cu",
     "src/cuda/packet.cu",
     "src/cuda/connection_context.cu",
     "src/cuda/connection.cu",
     "src/cuda/registered_memory.cu",
+    "src/cuda/semaphore.cu",
 ]
 
 if USE_CUDA:
