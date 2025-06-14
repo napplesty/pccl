@@ -22,7 +22,7 @@ setup(
     ext_modules=[
         CppExtension(
             name='_pccl',
-            sources=envs.CSRCS + (envs.CUSRCS if envs.USE_CUDA or envs.USE_HIP else []),
+            sources=envs.CSRCS,
             extra_compile_args=envs.FLAGS,
             include_dirs=envs.INCLUDE_DIRS,
             library_dirs=envs.LIBRARY_DIRS,
