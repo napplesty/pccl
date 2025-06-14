@@ -1,9 +1,9 @@
 #include "config.h"
 
-#include <cstdlib>   // For std::getenv
-#include <memory>    // For std::shared_ptr, std::make_shared
-#include <stdexcept> // For std::invalid_argument, std::out_of_range
-#include <string>    // For std::string, std::stoi
+#include <cstdlib>
+#include <memory>
+#include <stdexcept>
+#include <string>
 
 namespace pccl {
 
@@ -57,4 +57,5 @@ std::shared_ptr<env> getEnv() {
           ib_port0_val, ib_port1_val, net_conf_addr_val, net_conf_port_val,
           net_conf_model_val, profile_dir_val});
 }
+
 } // namespace pccl

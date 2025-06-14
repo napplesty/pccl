@@ -39,8 +39,8 @@ struct Config {
   constexpr static int MAX_WR_PER_SEND = WARP_SIZE;
 
   // proxy
-  constexpr static int ProxyFlushPeriod = 4;
-  constexpr static int ProxyStopCheckPeriod = 4000;
+  constexpr static int PROXY_FLUSH_PERIOD = 4;
+  constexpr static int PROXY_CHECK_STOP_PERIOD = 4000;
 };
 
 struct env {

@@ -133,6 +133,7 @@ public:
   bool test(size_t pos) const { return TransportFlagsBase::test(pos); }
 
   static TransportFlags fromString(const std::string &s);
+  std::string toString() const;
 
 private:
   TransportFlags(TransportFlagsBase bitset);
@@ -174,7 +175,7 @@ class Endpoint {
 public:
   int rank() const;
   Transport transport() const;
-  RegisteredMemory getRegisteredMemory(BufferType type);
+  RegisteredMemory getRegisteredMemory(BufferType type, uint64_t tag = 0);
   int maxWriteQueueSize() const;
   int maxCompleteQueueSize() const;
   uint64_t latency() const;
@@ -205,7 +206,6 @@ public:
   std::vector<RegisteredMemory> waitWorkSpaceReady(std::vector<int> &ranks,
                                                    int tag);
 
-  // 静态工厂方法用于创建RegisteredMemory
   static RegisteredMemory
   createRegisteredMemory(std::shared_ptr<RegisteredMemory::Impl> impl);
 

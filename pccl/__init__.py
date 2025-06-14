@@ -10,4 +10,3 @@ if USE_CUDA:
 
 from _pccl import *
 
-__all__ = []
