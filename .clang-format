@@ -1,0 +1,12 @@
+---
+Language:        Cpp
+
+IndentWidth:     2
+TabWidth:        2
+UseTab:          Never
+
+FunctionNamingStyle: lower_case
+AllowShortFunctionsOnASingleLine: None
+
+DerivePointerAlignment: false
+PointerAlignment: Left

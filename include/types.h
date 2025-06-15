@@ -1,7 +1,7 @@
 #pragma once
 
-#include <cstdint>
 #include <bitset>
+#include <cstdint>
 
 namespace pccl {
 
@@ -38,8 +38,12 @@ enum class BufferType : int {
 
 enum class ComponentType : int {
   Cpu,
+  CpuIpc,
   Cuda,
+  CudaIpc,
+  Nvls,
   Hip,
+  HipIpc,
   Port,
   ComponentTypeEnd,
 };
@@ -70,7 +74,8 @@ enum class CacheLevel {
 };
 
 using FunctionTypeFlags = std::bitset<(size_t)FunctionType::FunctionTypeEnd>;
-using OperationTypeFlags = std::bitset<(size_t)BasicOperationType::BasicOperationTypeEnd>;
+using OperationTypeFlags =
+    std::bitset<(size_t)BasicOperationType::BasicOperationTypeEnd>;
 using ComponentTypeFlags = std::bitset<(size_t)ComponentType::ComponentTypeEnd>;
 using PluginTypeFlags = std::bitset<(size_t)PluginType::PluginTypeEnd>;
 
@@ -87,6 +92,12 @@ struct alignas(16) ProxyTrigger {
     };
     uint64_t value;
   };
+};
+
+struct alignas(16) PcclPtr {
+  void *ptr;
+  size_t size;
+  ComponentTypeFlags flags;
 };
 
 } // namespace pccl

@@ -1,5 +1,7 @@
 #pragma once
 
+#include <string>
+
 namespace pccl {
 
 struct Config {
@@ -9,6 +11,10 @@ struct Config {
   static int PROXY_FLUSH_PERIOD;
   static int PROXY_MAX_FLUSH_SIZE;
   static int PROXY_CHECK_STOP_PERIOD;
+
+  static std::string LOG_LEVEL;
+  static std::string LOG_PATH;
+  static std::string PROFILE_PATH;
 };
 
 } // namespace pccl
