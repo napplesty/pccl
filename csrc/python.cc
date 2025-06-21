@@ -1,7 +1,10 @@
 #include "config.h"
+#include "endpoint.h"
 #include "pybind11/pybind11.h"
+#include "registered_memory.h"
 #include "types.h"
 #include "utils.h"
+#include "communicator.h"
 #include <stdexcept>
 
 namespace pccl {
@@ -151,6 +154,12 @@ void register_types(py::module &m) {
       .def("set", &PyFlagsPlugin::set)
       .def("test", &PyFlagsPlugin::test)
       .def("size", &PyFlagsPlugin::size);
+
+  py::class_<HandleType>(m, "PcclHandle")
+      .def(py::init<>())
+      .def("__str__", &HandleType::dump)
+      .def("__repr__", &HandleType::dump)
+      .def_static("from_string", [](const std::string &str){ return HandleType::parse(str); });
 }
 
 void register_utils(py::module &m) {
@@ -162,9 +171,35 @@ void register_utils(py::module &m) {
   utils.def("pid_hash", &pid_hash);
 }
 
+void register_communicator(py::module &m) {
+  py::class_<Communicator>(m, "Communicator")
+      .def(py::init<>())
+      .def("export_endpoint", &Communicator::export_endpoint)
+      .def("import_endpoint", &Communicator::import_endpoint)
+      .def("get_enabled_components", &Communicator::get_enabled_components)
+      .def("get_enabled_plugins", &Communicator::get_enabled_plugins)
+      .def("get_lib_mem", &Communicator::get_lib_mem)
+      .def("get_buffer_mem", &Communicator::get_buffer_mem);
+
+  py::class_<Endpoint>(m, "Endpoint")
+      .def(py::init<>())
+      .def("export_handle", &Endpoint::export_handle)
+      .def_static("import_handle", &Endpoint::import_handle);
+
+  py::class_<RegisteredMemory>(m, "RegisteredMemory")
+      .def(py::init<ComponentTypeFlags, size_t, TagId>(), py::arg("component_flags"), py::arg("size"), py::arg("tag"))
+      .def("export_handle", &RegisteredMemory::export_handle)
+      .def_static("import_handle", &RegisteredMemory::import_handle)
+      .def("get_ptr", &RegisteredMemory::get_ptr, py::return_value_policy::reference)
+      .def("tag", &RegisteredMemory::tag)
+      .def("component_flags", &RegisteredMemory::component_flags)
+      .def("size", &RegisteredMemory::size);
+}
+
 PYBIND11_MODULE(_pccl, m) {
   m.doc() = "PCCL runtime";
   register_config(m);
   register_types(m);
   register_utils(m);
+  register_communicator(m);
 }

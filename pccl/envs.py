@@ -31,9 +31,7 @@ INCLUDE_DIRS = [
 
 CSRCS = [
     "csrc/config.cc",
-    "csrc/operator.cc",
     "csrc/python.cc",
-    "csrc/net/ib/ib.cc",
     "csrc/utils/defs.cc",
     "csrc/utils/logging.cc",
     "csrc/utils/profile.cc",

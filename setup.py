@@ -2,7 +2,7 @@ import sys
 import importlib.util
 from pathlib import Path
 
-from setuptools import setup
+from setuptools import setup, find_packages
 from torch.utils.cpp_extension import BuildExtension, CppExtension
 
 def load_module_from_path(module_name, path):
@@ -19,6 +19,8 @@ envs = load_module_from_path('envs', ROOT_DIR / 'pccl' / 'envs.py')
 setup(
     name='pccl',
     version='1.0.0',
+    packages=find_packages(include=['pccl']),
+    include_package_data=True,
     ext_modules=[
         CppExtension(
             name='_pccl',

@@ -10,6 +10,7 @@ namespace pccl {
 
 class RegisteredMemory {
 public:
+  RegisteredMemory() = default;
   RegisteredMemory(ComponentTypeFlags component_flags, size_t size, TagId tag);
   ~RegisteredMemory();
 

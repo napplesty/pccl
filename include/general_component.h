@@ -4,75 +4,73 @@
 #include "types.h"
 #include <concepts>
 #include <cstdint>
+#include <type_traits>
 #include <vector>
 
 namespace pccl {
 
-template <typename T>
-concept FuncLib = requires(T &component) {
-  { component.get_component_flags() } -> std::same_as<ComponentTypeFlags>;
-  { component.get_function_flags() } -> std::same_as<FunctionTypeFlags>;
+
+struct FuncLib {
+  virtual ComponentTypeFlags get_component_flags() const = 0;
+  virtual FunctionTypeFlags get_function_flags() const = 0;
+  virtual ~FuncLib() = default;
 };
 
-template <typename T>
-concept FuncContext = requires(T &component, int local_index) {
-  { component.context_guard(local_index) } -> std::same_as<void>;
+struct FuncContext {
+  virtual void context_guard(int local_index) = 0;
+  virtual ~FuncContext() = default;
+};
+  
+struct FuncStream {
+  virtual void stream_guard(void* stream) = 0;
+  virtual void* stream(int index) = 0;
+  virtual void* stream(int index, int priority) = 0;
+  virtual ~FuncStream() = default;
 };
 
-template <typename T>
-concept FuncStream = requires(T &component, int index, int priority, void *stream) {
-  { component.stream_guard(stream) } -> std::same_as<void>;
-  { component.stream(index) } -> std::convertible_to<void *>;
-  { component.stream(index, priority) } -> std::convertible_to<void *>;
+struct FuncMemory {
+  virtual RegisteredMemory alloc(RegisteredMemory mem) = 0;
+  virtual void free(RegisteredMemory mem) = 0;
+  virtual HandleType export_handle(RegisteredMemory mem) = 0;
+  virtual RegisteredMemory import_handle(HandleType handle) = 0;
+  virtual void unimport_handle(RegisteredMemory mem) = 0;
+  virtual ~FuncMemory() = default;
 };
 
-template <typename T>
-concept FuncMemory = requires(T &component, RegisteredMemory mem, HandleType handle) {
-  { component.alloc(mem) } -> std::same_as<RegisteredMemory>;
-  { component.free(mem) } -> std::same_as<void>;
-  { component.export_handle(mem) } -> std::same_as<HandleType>;
-  { component.import_handle(handle) } -> std::same_as<RegisteredMemory>;
-  { component.unimport_handle(mem) } -> std::same_as<void>;
+struct FuncConnection {
+  virtual PluginTypeFlags get_plugin_type() const = 0;
+  virtual HandleType export_handle() = 0;
+  virtual bool connect(HandleType handle) = 0;
+  virtual bool set_rts(HandleType handle) = 0;
+  virtual bool set_rtr(HandleType handle) = 0;
+  virtual bool disconnect(HandleType handle) = 0;
+  virtual int get_num_connected() const = 0;
+  virtual uint64_t get_bandwidth() const = 0;
+  virtual uint64_t get_latency() const = 0;
+  virtual ~FuncConnection() = default;
 };
 
-template <typename T>
-concept FuncConnection = requires(T &component, HandleType handle) {
-  { component.export_handle() } -> std::same_as<HandleType>;
-  { component.connect(handle) } -> std::same_as<bool>;
-  { component.set_rts(handle) } -> std::same_as<bool>;
-  { component.set_rtr(handle) } -> std::same_as<bool>;
-  { component.disconnect(handle) } -> std::same_as<bool>;
-  { component.get_num_connected() } -> std::convertible_to<int>;
-  { component.get_bandwidth() } -> std::convertible_to<uint64_t>;
-  { component.get_latency() } -> std::convertible_to<uint64_t>;
+struct FuncRegMem {
+  virtual RegisteredMemory reg(RegisteredMemory mem) = 0;
+  virtual RegisteredMemory unreg(RegisteredMemory mem) = 0;
+  virtual ~FuncRegMem() = default;
 };
 
-template <typename T>
-concept FuncRegMem = requires(T &component, RegisteredMemory mem) {
-  { component.reg(mem) } -> std::same_as<RegisteredMemory>;
-  { component.unreg(mem) } -> std::same_as<RegisteredMemory>;
+struct FuncPhaseSwitch {
+  virtual int get_phase() const = 0;
+  virtual void phase_reg(const std::string& path, int phase) = 0;
+  virtual void launch_phase_change(int phase) = 0;
+  virtual void commit(int phase) = 0;
+  virtual ~FuncPhaseSwitch() = default;
 };
 
-template <typename T>
-concept FuncPhaseSwitch = requires(T &component, int phase, std::string path) {
-  { component.get_phase() } -> std::convertible_to<int>;
-  { component.phase_reg(path, phase) } -> std::same_as<void>;
-  { component.launch_phase_change(phase) } -> std::same_as<void>;
-  { component.commit(phase) } -> std::same_as<void>;
-};
+// 替换组合 concept
+class GeneralComponent : public FuncLib {};
+class DeviceComponent : public FuncLib, public FuncContext, public FuncMemory, public FuncStream {};
+class NetComponent : public FuncLib, public FuncConnection, public FuncRegMem {};
+class SwitchComponent : public FuncLib, public FuncPhaseSwitch {};
 
-template <typename T>
-concept GeneralComponent = FuncLib<T>;
-
-template <typename T>
-concept DeviceComponent = FuncLib<T> && FuncContext<T> && FuncMemory<T> && FuncStream<T>;
-
-template <typename T>
-concept NetComponent = FuncLib<T> && FuncConnection<T> && FuncRegMem<T>;
-
-template <typename T>
-concept SwitchComponent = FuncLib<T> && FuncPhaseSwitch<T>;
-
+// 修改 ComponentRegistry 的注册方法
 class ComponentRegistry {
 public:
   static ComponentRegistry &get_instance() {
@@ -80,13 +78,19 @@ public:
     return instance;
   }
 
-  template <GeneralComponent T> 
+  template <typename T>
   void register_component(T *component_ptr) {
+    static_assert(std::is_convertible_v<T, GeneralComponent>, "Component must inherit from GeneralComponent");
+    
     ComponentTypeFlags component_flags = component_ptr->get_component_flags();
     FunctionTypeFlags function_flags = component_ptr->get_function_flags();
-    uintptr_t ptr = component_ptr;
-    components_.emplace(std::make_tuple(component_flags, function_flags), ptr);
+    components_.emplace(std::make_tuple(component_flags, function_flags), 
+                     static_cast<GeneralComponent*>(component_ptr));
   }
+
+  ComponentTypeFlags available_components();
+  PluginTypeFlags available_plugins();
+  std::vector<NetComponent *> net_components();
 
 private:
   ComponentRegistry() = default;
@@ -95,9 +99,9 @@ private:
   ComponentRegistry &operator=(const ComponentRegistry &) = delete;
 
 private:
-  std::map<ComponentTypeFlags, std::vector<FunctionTypeFlags>> self_component_types;
+  std::map<ComponentTypeFlags, std::vector<FunctionTypeFlags>> component_types;
   std::map<ComponentTypeFlags, std::vector<PluginTypeFlags>> component_plugins;
-  std::map<std::tuple<ComponentTypeFlags, FunctionTypeFlags>, uintptr_t> components_;
+  std::map<std::tuple<ComponentTypeFlags, FunctionTypeFlags>, GeneralComponent*> components_;
 };
 
 } // namespace pccl
