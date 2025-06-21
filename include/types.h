@@ -2,6 +2,7 @@
 
 #include <bitset>
 #include <cstdint>
+#include <nlohmann/json.hpp>
 
 namespace pccl {
 
@@ -10,10 +11,14 @@ enum class FunctionType : int {
   Stream,
   Memory,
   MemReg,
+  Connection,
+  PhaseSwitch,
   FunctionTypeEnd,
 };
 
 enum class BasicOperationType : int {
+  Notify,
+  GetNotified,
   Put,
   Get,
   Flush,
@@ -36,6 +41,7 @@ enum class BufferType : int {
   BufferTypeEnd,
 };
 
+// 内存分配和计算
 enum class ComponentType : int {
   Cpu,
   CpuIpc,
@@ -48,6 +54,7 @@ enum class ComponentType : int {
   ComponentTypeEnd,
 };
 
+// 外围设备插件
 enum class PluginType : int {
   Ib,
   Tcp,
@@ -74,30 +81,21 @@ enum class CacheLevel {
 };
 
 using FunctionTypeFlags = std::bitset<(size_t)FunctionType::FunctionTypeEnd>;
-using OperationTypeFlags =
-    std::bitset<(size_t)BasicOperationType::BasicOperationTypeEnd>;
+using OperationTypeFlags = std::bitset<(size_t)BasicOperationType::BasicOperationTypeEnd>;
 using ComponentTypeFlags = std::bitset<(size_t)ComponentType::ComponentTypeEnd>;
 using PluginTypeFlags = std::bitset<(size_t)PluginType::PluginTypeEnd>;
 
 using ProxyId = uint32_t;
 using OperatorId = uint32_t;
+using OperationId = uint32_t;
+using TagId = int;
+using HandleType = nlohmann::json;
 
 struct alignas(16) ProxyTrigger {
   ProxyId proxy_id;
   OperatorId operator_id;
-  union {
-    struct {
-      bool has_value : 1;
-      uint64_t operation_id : 63;
-    };
-    uint64_t value;
-  };
-};
-
-struct alignas(16) PcclPtr {
-  void *ptr;
-  size_t size;
-  ComponentTypeFlags flags;
+  bool has_value;
+  OperationId operation_id;
 };
 
 } // namespace pccl

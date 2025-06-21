@@ -1,44 +1,29 @@
 #pragma once
 
 #include "types.h"
-#include <cstdint>
-#include <optional>
+#include <cstddef>
+#include <memory>
+#include <tuple>
+#include <vector>
 
 namespace pccl {
 
 class RegisteredMemory {
 public:
-  RegisteredMemory(size_t sizes[(uint64_t)BufferType::BufferTypeEnd],
-                   ComponentTypeFlags component_types,
-                   PluginTypeFlags plugin_types, uint64_t tag);
+  RegisteredMemory(ComponentTypeFlags component_flags, size_t size, TagId tag);
   ~RegisteredMemory();
 
-  template <BufferType buffer_type> std::optional<void *> get_buffer_ptr() {
-    if constexpr (buffer_type >= BufferType::BufferTypeEnd) {
-      return std::nullopt;
-    }
-    if (ptrs_[(uint64_t)buffer_type] == nullptr) {
-      return std::nullopt;
-    }
-    return ptrs_[(uint64_t)buffer_type];
-  }
+  HandleType export_handle();
+  static RegisteredMemory import_handle(HandleType handle);
+  void *get_ptr(ComponentTypeFlags flag);
 
-  template <BufferType buffer_type> std::optional<size_t> get_buffer_size() {
-    if constexpr (buffer_type >= BufferType::BufferTypeEnd) {
-      return std::nullopt;
-    }
-    if (size_[(uint64_t)buffer_type] == 0) {
-      return std::nullopt;
-    }
-    return size_[(uint64_t)buffer_type];
-  }
-
-private:
-  void *ptrs_[(uint64_t)BufferType::BufferTypeEnd];
-  size_t size_[(uint64_t)BufferType::BufferTypeEnd];
-  const ComponentTypeFlags component_types_;
-  const PluginTypeFlags plugin_types_;
-  const uint64_t tag_;
+public:
+  using HandlePtr = std::shared_ptr<std::tuple<PluginTypeFlags, HandleType>>;
+  TagId tag;
+  ComponentTypeFlags component_flags;
+  std::vector<HandlePtr> handles;
+  std::vector<void *> ptrs;
+  size_t size;
 };
 
 }; // namespace pccl

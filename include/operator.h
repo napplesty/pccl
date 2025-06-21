@@ -1,14 +1,22 @@
 #pragma once
 
+#include "registered_memory.h"
 #include "types.h"
+#include "communicator.h"
 #include <cstdint>
+#include <map>
 #include <memory>
+#include <vector>
 
 namespace pccl {
 
 struct BasicOperation {
   BasicOperationType type;
   union {
+    struct {
+      ProxyId proxy_id;
+      OperationId op_id;
+    } notify_op;
     struct {
       BufferType src_buffer_type;
       BufferType dst_buffer_type;
@@ -17,27 +25,27 @@ struct BasicOperation {
       uint64_t src_offset;
       uint64_t dst_offset;
       uint64_t size;
-      uint64_t tag;
+      TagId tag;
     } net_op;
     struct {
       ElemwiseComputeType op_type;
       BufferType src_buffer_type;
       BufferType dst_buffer_type;
-      int src_src;
-      int dst_src;
+      int src;
+      int dst;
       uint64_t src_offset;
       uint64_t dst_offset;
-      uint64_t tag;
+      TagId tag;
       bool with_epilogue;
     } elemwise_compute_op;
     struct {
       BufferType src_buffer_type;
       BufferType dst_buffer_type;
-      int src_src;
-      int dst_src;
+      int src;
+      int dst;
       uint64_t src_offset;
       uint64_t dst_offset;
-      uint64_t tag;
+      TagId tag;
       bool with_epilogue;
     } load_store_op;
     struct {
@@ -56,12 +64,24 @@ struct BasicOperation {
   };
 };
 
+struct Workspace {
+  OperatorId operator_id;
+  RegisteredMemory lib;
+  RegisteredMemory buffer;
+  RegisteredMemory user_input;
+  RegisteredMemory user_output;
+  std::map<ComponentTypeFlags, std::vector<std::vector<BasicOperation>>>
+      operations;
+};
+
 class Operator {
 public:
   Operator() = default;
   ~Operator() = default;
 
-  static Operator create(std::string_view path);
+  static Operator load(std::string_view path);
+  void execute(Communicator &communicator);
+
 private:
   class Impl;
   std::shared_ptr<Impl> impl_;

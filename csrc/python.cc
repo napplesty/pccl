@@ -82,149 +82,75 @@ void register_config(py::module &m) {
 }
 
 void register_types(py::module &m) {
-  py::class_<FlagsWrapper<(size_t)FunctionType::FunctionTypeEnd, 0>>(
+
+  using PyFlagsFunction = FlagsWrapper<(size_t)FunctionType::FunctionTypeEnd, 0>;
+  using PyFlagsOperation = FlagsWrapper<(size_t)BasicOperationType::BasicOperationTypeEnd, 1>;
+  using PyFlagsComponent = FlagsWrapper<(size_t)ComponentType::ComponentTypeEnd, 2>;
+  using PyFlagsPlugin = FlagsWrapper<(size_t)PluginType::PluginTypeEnd, 3>;
+
+  py::class_<PyFlagsFunction>(
       m, "FunctionTypeFlags")
       .def(py::init<>())
       .def(py::init<const std::string &>())
-      .def("__and__",
-           &FlagsWrapper<(size_t)FunctionType::FunctionTypeEnd, 0>::operator&)
-      .def("__or__",
-           &FlagsWrapper<(size_t)FunctionType::FunctionTypeEnd, 0>::operator|)
-      .def("__xor__",
-           &FlagsWrapper<(size_t)FunctionType::FunctionTypeEnd, 0>::operator^)
-      .def("__invert__",
-           &FlagsWrapper<(size_t)FunctionType::FunctionTypeEnd, 0>::operator~)
-      .def(
-          "__eq__",
-          [](const FlagsWrapper<(size_t)FunctionType::FunctionTypeEnd, 0> &self,
-             const FlagsWrapper<(size_t)FunctionType::FunctionTypeEnd, 0>
-                 &other) { return self.flags == other.flags; })
-      .def(
-          "__ne__",
-          [](const FlagsWrapper<(size_t)FunctionType::FunctionTypeEnd, 0> &self,
-             const FlagsWrapper<(size_t)FunctionType::FunctionTypeEnd, 0>
-                 &other) { return self.flags != other.flags; })
-      .def("__str__",
-           &FlagsWrapper<(size_t)FunctionType::FunctionTypeEnd, 0>::to_string)
-      .def("__repr__",
-           &FlagsWrapper<(size_t)FunctionType::FunctionTypeEnd, 0>::to_string)
-      .def("set", &FlagsWrapper<(size_t)FunctionType::FunctionTypeEnd, 0>::set)
-      .def("test",
-           &FlagsWrapper<(size_t)FunctionType::FunctionTypeEnd, 0>::test)
-      .def("size",
-           &FlagsWrapper<(size_t)FunctionType::FunctionTypeEnd, 0>::size);
+      .def("__and__", &PyFlagsFunction::operator&)
+      .def("__or__", &PyFlagsFunction::operator|)
+      .def("__xor__", &PyFlagsFunction::operator^)
+      .def("__invert__", &PyFlagsFunction::operator~)
+      .def("__eq__", [](const PyFlagsFunction& self, const PyFlagsFunction& other) { return self.flags == other.flags; })
+      .def("__ne__", [](const PyFlagsFunction& self, const PyFlagsFunction& other) { return self.flags != other.flags; })
+      .def("__str__", &PyFlagsFunction::to_string)
+      .def("__repr__", &PyFlagsFunction::to_string)
+      .def("set", &PyFlagsFunction::set)
+      .def("test", &PyFlagsFunction::test)
+      .def("size", &PyFlagsFunction::size);
 
-  py::class_<
-      FlagsWrapper<(size_t)BasicOperationType::BasicOperationTypeEnd, 1>>(
+  py::class_<PyFlagsOperation>(
       m, "OperationTypeFlags")
       .def(py::init<>())
       .def(py::init<const std::string &>())
-      .def("__and__",
-           &FlagsWrapper<(size_t)BasicOperationType::BasicOperationTypeEnd,
-                         1>::operator&)
-      .def("__or__",
-           &FlagsWrapper<(size_t)BasicOperationType::BasicOperationTypeEnd,
-                         1>::operator|)
-      .def("__xor__",
-           &FlagsWrapper<(size_t)BasicOperationType::BasicOperationTypeEnd,
-                         1>::operator^)
-      .def("__invert__",
-           &FlagsWrapper<(size_t)BasicOperationType::BasicOperationTypeEnd,
-                         1>::operator~)
-      .def(
-          "__eq__",
-          [](const FlagsWrapper<
-                 (size_t)BasicOperationType::BasicOperationTypeEnd, 1> &self,
-             const FlagsWrapper<
-                 (size_t)BasicOperationType::BasicOperationTypeEnd, 1> &other) {
-            return self.flags == other.flags;
-          })
-      .def(
-          "__ne__",
-          [](const FlagsWrapper<
-                 (size_t)BasicOperationType::BasicOperationTypeEnd, 1> &self,
-             const FlagsWrapper<
-                 (size_t)BasicOperationType::BasicOperationTypeEnd, 1> &other) {
-            return self.flags != other.flags;
-          })
-      .def("__str__",
-           &FlagsWrapper<(size_t)BasicOperationType::BasicOperationTypeEnd,
-                         1>::to_string)
-      .def("__repr__",
-           &FlagsWrapper<(size_t)BasicOperationType::BasicOperationTypeEnd,
-                         1>::to_string)
-      .def("set",
-           &FlagsWrapper<(size_t)BasicOperationType::BasicOperationTypeEnd,
-                         1>::set)
-      .def("test",
-           &FlagsWrapper<(size_t)BasicOperationType::BasicOperationTypeEnd,
-                         1>::test)
-      .def("size",
-           &FlagsWrapper<(size_t)BasicOperationType::BasicOperationTypeEnd,
-                         1>::size);
+      .def("__and__", &PyFlagsOperation::operator&)
+      .def("__or__", &PyFlagsOperation::operator|)
+      .def("__xor__", &PyFlagsOperation::operator^)
+      .def("__invert__", &PyFlagsOperation::operator~)
+      .def("__eq__", [](const PyFlagsOperation& self, const PyFlagsOperation& other) { return self.flags == other.flags; })
+      .def("__ne__", [](const PyFlagsOperation& self, const PyFlagsOperation& other) { return self.flags != other.flags; })
+      .def("__str__", &PyFlagsOperation::to_string)
+      .def("__repr__", &PyFlagsOperation::to_string)
+      .def("set", &PyFlagsOperation::set)
+      .def("test", &PyFlagsOperation::test)
+      .def("size", &PyFlagsOperation::size);
 
-  py::class_<FlagsWrapper<(size_t)ComponentType::ComponentTypeEnd, 2>>(
+  py::class_<PyFlagsComponent>(
       m, "ComponentTypeFlags")
       .def(py::init<>())
       .def(py::init<const std::string &>())
-      .def("__and__",
-           &FlagsWrapper<(size_t)ComponentType::ComponentTypeEnd, 2>::operator&)
-      .def("__or__",
-           &FlagsWrapper<(size_t)ComponentType::ComponentTypeEnd, 2>::operator|)
-      .def("__xor__",
-           &FlagsWrapper<(size_t)ComponentType::ComponentTypeEnd, 2>::operator^)
-      .def("__invert__",
-           &FlagsWrapper<(size_t)ComponentType::ComponentTypeEnd, 2>::operator~)
-      .def("__eq__",
-           [](const FlagsWrapper<(size_t)ComponentType::ComponentTypeEnd, 2>
-                  &self,
-              const FlagsWrapper<(size_t)ComponentType::ComponentTypeEnd, 2>
-                  &other) { return self.flags == other.flags; })
-      .def("__ne__",
-           [](const FlagsWrapper<(size_t)ComponentType::ComponentTypeEnd, 2>
-                  &self,
-              const FlagsWrapper<(size_t)ComponentType::ComponentTypeEnd, 2>
-                  &other) { return self.flags != other.flags; })
-      .def("__str__",
-           &FlagsWrapper<(size_t)ComponentType::ComponentTypeEnd, 2>::to_string)
-      .def("__repr__",
-           &FlagsWrapper<(size_t)ComponentType::ComponentTypeEnd, 2>::to_string)
-      .def("set",
-           &FlagsWrapper<(size_t)ComponentType::ComponentTypeEnd, 2>::set)
-      .def("test",
-           &FlagsWrapper<(size_t)ComponentType::ComponentTypeEnd, 2>::test)
-      .def("size",
-           &FlagsWrapper<(size_t)ComponentType::ComponentTypeEnd, 2>::size);
+      .def("__and__", &PyFlagsComponent::operator&)
+      .def("__or__", &PyFlagsComponent::operator|)
+      .def("__xor__", &PyFlagsComponent::operator^)
+      .def("__invert__", &PyFlagsComponent::operator~)
+      .def("__eq__", [](const PyFlagsComponent& self, const PyFlagsComponent& other) { return self.flags == other.flags; })
+      .def("__ne__", [](const PyFlagsComponent& self, const PyFlagsComponent& other) { return self.flags != other.flags; })
+      .def("__str__", &PyFlagsComponent::to_string)
+      .def("__repr__", &PyFlagsComponent::to_string)
+      .def("set", &PyFlagsComponent::set)
+      .def("test", &PyFlagsComponent::test)
+      .def("size", &PyFlagsComponent::size);
 
-  py::class_<FlagsWrapper<(size_t)PluginType::PluginTypeEnd, 3>>(
+  py::class_<PyFlagsPlugin>(
       m, "PluginTypeFlags")
       .def(py::init<>())
       .def(py::init<const std::string &>())
-      .def("__and__",
-           &FlagsWrapper<(size_t)PluginType::PluginTypeEnd, 3>::operator&)
-      .def("__or__",
-           &FlagsWrapper<(size_t)PluginType::PluginTypeEnd, 3>::operator|)
-      .def("__xor__",
-           &FlagsWrapper<(size_t)PluginType::PluginTypeEnd, 3>::operator^)
-      .def("__invert__",
-           &FlagsWrapper<(size_t)PluginType::PluginTypeEnd, 3>::operator~)
-      .def("__eq__",
-           [](const FlagsWrapper<(size_t)PluginType::PluginTypeEnd, 3> &self,
-              const FlagsWrapper<(size_t)PluginType::PluginTypeEnd, 3> &other) {
-             return self.flags == other.flags;
-           })
-      .def("__ne__",
-           [](const FlagsWrapper<(size_t)PluginType::PluginTypeEnd, 3> &self,
-              const FlagsWrapper<(size_t)PluginType::PluginTypeEnd, 3> &other) {
-             return self.flags != other.flags;
-           })
-      .def("__str__",
-           &FlagsWrapper<(size_t)PluginType::PluginTypeEnd, 3>::to_string)
-      .def("__repr__",
-           &FlagsWrapper<(size_t)PluginType::PluginTypeEnd, 3>::to_string)
-      .def("set", &FlagsWrapper<(size_t)PluginType::PluginTypeEnd, 3>::set)
-      .def("test", &FlagsWrapper<(size_t)PluginType::PluginTypeEnd, 3>::test)
-      .def("size", &FlagsWrapper<(size_t)PluginType::PluginTypeEnd, 3>::size);
+      .def("__and__", &PyFlagsPlugin::operator&)
+      .def("__or__", &PyFlagsPlugin::operator|)
+      .def("__xor__", &PyFlagsPlugin::operator^)
+      .def("__invert__", &PyFlagsPlugin::operator~)
+      .def("__eq__", [](const PyFlagsPlugin& self, const PyFlagsPlugin& other) { return self.flags == other.flags; })
+      .def("__ne__", [](const PyFlagsPlugin& self, const PyFlagsPlugin& other) { return self.flags != other.flags; })
+      .def("__str__", &PyFlagsPlugin::to_string)
+      .def("__repr__", &PyFlagsPlugin::to_string)
+      .def("set", &PyFlagsPlugin::set)
+      .def("test", &PyFlagsPlugin::test)
+      .def("size", &PyFlagsPlugin::size);
 }
 
 void register_utils(py::module &m) {

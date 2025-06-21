@@ -3,10 +3,10 @@ Language:        Cpp
 
 IndentWidth:     2
 TabWidth:        2
+ColumnLimit:     150
 UseTab:          Never
 
-FunctionNamingStyle: lower_case
-AllowShortFunctionsOnASingleLine: None
+AllowShortFunctionsOnASingleLine: False
 
 DerivePointerAlignment: false
 PointerAlignment: Left
