@@ -6,7 +6,7 @@
 
 namespace pccl {
 
-Communicator::Communicator() {}
+Communicator::Communicator(int rank) : rank(rank) {}
 
 Communicator::~Communicator() {}
 
@@ -34,6 +34,5 @@ RegisteredMemory Communicator::get_buffer_mem(int rank, TagId tag_id) {
   return RegisteredMemory(ComponentTypeFlags(), 0, tag_id);
 }
 
-
-
 } // namespace pccl
+

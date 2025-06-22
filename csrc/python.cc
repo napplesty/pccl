@@ -173,7 +173,7 @@ void register_utils(py::module &m) {
 
 void register_communicator(py::module &m) {
   py::class_<Communicator>(m, "Communicator")
-      .def(py::init<>())
+      .def(py::init<int>(), py::arg("rank"))
       .def("export_endpoint", &Communicator::export_endpoint)
       .def("import_endpoint", &Communicator::import_endpoint)
       .def("get_enabled_components", &Communicator::get_enabled_components)
