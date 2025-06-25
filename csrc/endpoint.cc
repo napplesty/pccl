@@ -2,10 +2,11 @@
 #include "communicator.h"
 #include "general_component.h"
 #include "types.h"
+#include "utils.h"
 
 namespace pccl {
 
-HandleType Endpoint::export_handle() {
+PCCL_API HandleType Endpoint::export_handle() {
   HandleType handle;
   handle["host_hash"] = endpoint_host_hash;
   handle["pid_hash"] = endpoint_pid_hash;
@@ -17,7 +18,7 @@ HandleType Endpoint::export_handle() {
   return handle;
 } 
 
-Endpoint::Endpoint(Communicator &communicator)
+PCCL_API Endpoint::Endpoint(Communicator &communicator)
   : endpoint_host_hash(get_host_hash()),
     endpoint_pid_hash(get_pid_hash()),
     endpoint_lib_mem(communicator.get_lib_mem(communicator.get_rank(), 0)),
@@ -30,7 +31,7 @@ Endpoint::Endpoint(Communicator &communicator)
   }
 }
 
-Endpoint Endpoint::import_handle(const HandleType &handle) {
+PCCL_API Endpoint Endpoint::import_handle(const HandleType &handle) {
   Endpoint endpoint;
   endpoint.endpoint_host_hash = handle["host_hash"].get<uint64_t>();
   endpoint.endpoint_pid_hash = handle["pid_hash"].get<uint64_t>();
@@ -42,5 +43,9 @@ Endpoint Endpoint::import_handle(const HandleType &handle) {
   return endpoint;
 }
 
+PCCL_API std::vector<NetComponent *> ComponentRegistry::net_components() {
+  std::vector<NetComponent *> net_components;
+  return net_components;
+}
 
 } // namespace pccl

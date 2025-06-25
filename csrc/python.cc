@@ -190,10 +190,10 @@ void register_communicator(py::module &m) {
       .def(py::init<ComponentTypeFlags, size_t, TagId>(), py::arg("component_flags"), py::arg("size"), py::arg("tag"))
       .def("export_handle", &RegisteredMemory::export_handle)
       .def_static("import_handle", &RegisteredMemory::import_handle)
-      .def("get_ptr", &RegisteredMemory::get_ptr, py::return_value_policy::reference)
-      .def("tag", &RegisteredMemory::tag)
-      .def("component_flags", &RegisteredMemory::component_flags)
-      .def("size", &RegisteredMemory::size);
+      .def("get_ptr", &RegisteredMemory::get_ptr)
+      .def("get_tag", &RegisteredMemory::get_tag)
+      .def("get_component_flags", &RegisteredMemory::get_component_flags)
+      .def("get_size", &RegisteredMemory::get_size);
 }
 
 PYBIND11_MODULE(_pccl, m) {

@@ -9,7 +9,6 @@
 
 namespace pccl {
 
-
 struct FuncLib {
   virtual ComponentTypeFlags get_component_flags() const = 0;
   virtual FunctionTypeFlags get_function_flags() const = 0;
@@ -64,13 +63,11 @@ struct FuncPhaseSwitch {
   virtual ~FuncPhaseSwitch() = default;
 };
 
-// 替换组合 concept
 class GeneralComponent : public FuncLib {};
 class DeviceComponent : public FuncLib, public FuncContext, public FuncMemory, public FuncStream {};
 class NetComponent : public FuncLib, public FuncConnection, public FuncRegMem {};
 class SwitchComponent : public FuncLib, public FuncPhaseSwitch {};
 
-// 修改 ComponentRegistry 的注册方法
 class ComponentRegistry {
 public:
   static ComponentRegistry &get_instance() {

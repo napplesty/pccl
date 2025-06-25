@@ -17,6 +17,9 @@ public:
   HandleType export_handle();
   static RegisteredMemory import_handle(HandleType handle);
   void *get_ptr(ComponentTypeFlags flag);
+  inline TagId get_tag() const { return tag; }
+  inline ComponentTypeFlags get_component_flags() const { return component_flags; }
+  inline size_t get_size() const { return size; }
 
 public:
   using HandlePtr = std::shared_ptr<std::tuple<PluginTypeFlags, HandleType>>;

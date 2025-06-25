@@ -33,6 +33,7 @@ CSRCS = [
     "csrc/communicator.cc",
     "csrc/general_component.cc",
     "csrc/registered_memory.cc",
+    "csrc/endpoint.cc",
     "csrc/config.cc",
     "csrc/python.cc",
     "csrc/utils/defs.cc",
