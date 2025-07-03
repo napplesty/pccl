@@ -3,6 +3,7 @@
 #include "endpoint.h"
 #include "registered_memory.h"
 #include "types.h"
+
 namespace pccl {
 
 class Communicator {

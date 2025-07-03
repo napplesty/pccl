@@ -50,7 +50,7 @@ enum class ComponentType : int {
   Nvls,
   Hip,
   HipIpc,
-  Port,
+  CpuNet,
   ComponentTypeEnd,
 };
 
@@ -90,12 +90,5 @@ using OperatorId = uint32_t;
 using OperationId = uint32_t;
 using TagId = int;
 using HandleType = nlohmann::json;
-
-struct alignas(16) ProxyTrigger {
-  ProxyId proxy_id;
-  OperatorId operator_id;
-  bool has_value;
-  OperationId operation_id;
-};
 
 } // namespace pccl

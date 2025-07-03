@@ -2,7 +2,6 @@
 
 #include "registered_memory.h"
 #include "types.h"
-#include <concepts>
 #include <cstdint>
 #include <type_traits>
 #include <vector>
@@ -63,10 +62,22 @@ struct FuncPhaseSwitch {
   virtual ~FuncPhaseSwitch() = default;
 };
 
-class GeneralComponent : public FuncLib {};
-class DeviceComponent : public FuncLib, public FuncContext, public FuncMemory, public FuncStream {};
-class NetComponent : public FuncLib, public FuncConnection, public FuncRegMem {};
-class SwitchComponent : public FuncLib, public FuncPhaseSwitch {};
+class GeneralComponent : public FuncLib {
+public:
+    ~GeneralComponent() override = default;
+};
+class DeviceComponent : public FuncLib, public FuncContext, public FuncMemory, public FuncStream {
+public:
+    ~DeviceComponent() override = default;
+};
+class NetComponent : public FuncLib, public FuncConnection, public FuncRegMem {
+public:
+    ~NetComponent() override = default;
+};
+class SwitchComponent : public FuncLib, public FuncPhaseSwitch {
+public:
+    ~SwitchComponent() override = default;
+};
 
 class ComponentRegistry {
 public:
