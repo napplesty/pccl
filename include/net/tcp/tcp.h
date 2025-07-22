@@ -21,7 +21,7 @@ class TcpCtx;
 
 struct TcpAddress {
   union {
-    struct in_addr v4_ip;
+    struct in_addr  v4_ip;
     struct in6_addr v6_ip;
   };
   uint16_t port;
@@ -50,8 +50,8 @@ enum class TcpStatus : int8_t {
 
 struct TcpMr {
   uintptr_t addr;
+  int mrn;
   ComponentTypeFlags component_flag;
-  int mr_id;
 };
 
 struct TcpWr {
@@ -61,9 +61,9 @@ struct TcpWr {
   int remote_qpn;
   TcpMr local_mr_info;
   TcpMr remote_mr_info;
-  uint32_t size;
-  uint32_t local_offset;
-  uint32_t remote_offset;
+  size_t size;
+  size_t local_offset;
+  size_t remote_offset;
   TcpOpType op_type;
   int atomic_value;
 };
@@ -113,13 +113,13 @@ public:
   void stageAtomicAdd(const TcpMr &mr, const TcpMr &remote_mr,
                       OperatorId op_id, OperationId operation_id, 
                       size_t dst_offset, int add_val);
-  TcpStatus postSend();
+  TcpStatus postOperations();
   int pollCq();
   TcpWc &getWcStatus(int idx);
 
 private:
-  TcpWr &stageOp();
-  friend class SockCtx;
+  TcpWr &stageOperation();
+  friend class TcpCtx;
   TcpQp() = default;
   int maxCqSize;
   int maxWrqSize;
@@ -142,11 +142,11 @@ public:
   std::shared_ptr<TcpQp> createQp(int max_cq_size, int max_wr);
   std::shared_ptr<TcpMr> registerMr(RegisteredMemory memory);
 private:
-  friend class SockQp;
-  struct SendRecvContext {
-    ssize_t remain_size;
-    std::shared_ptr<TcpMessageHeader> header;
-  };
+  friend class TcpQp;
+  struct SendRecvContext;
+
+  void removeQp(int qpn);
+  void removeMr(int mrn);
 
   std::shared_ptr<TcpQp> findQpByQpn(int qpn);
   void sendThreadCycle();
@@ -163,9 +163,19 @@ private:
   bool handleRecvMessageHeader(int fd, TcpMessageHeader &header, size_t &bytes_recv);
 
 private:
+  struct TcpQpContext {
+    int send_fd;
+    int recv_fd;
+  };
+
+  struct SendRecvContext {
+    ssize_t remain_size;
+    std::shared_ptr<TcpMessageHeader> header;
+  };
+
   std::mutex ctx_mutex;
-  static std::atomic<int64_t> next_mr_id;
-  static std::atomic<int64_t> next_qp_id;
+  static std::atomic<int> next_mrn;
+  static std::atomic<int> next_qpn;
 
   TcpAddress addr;
 
@@ -173,10 +183,9 @@ private:
   int recv_epoll_fd;
   int send_epoll_fd;
 
-  std::map<int64_t, std::shared_ptr<SockQp>> qps;
-  std::map<int64_t, std::shared_ptr<SockMr>> mrs;
-  std::map<int64_t, int> qpn_to_send_fd;
-  std::map<int64_t, int> qpn_to_recv_fd;
+  std::map<int64_t, std::shared_ptr<TcpQp>> qps;
+  std::map<int64_t, std::shared_ptr<TcpMr>> mrs;
+  std::map<int64_t, TcpQpContext> qp_contexts;
   std::map<int, int64_t> fd_to_qpn;
   std::map<int, SendRecvContext> send_recv_contexts;
 
@@ -185,7 +194,7 @@ private:
   std::thread send_thread;
 
   std::mutex send_queue_mutex;
-  std::deque<std::shared_ptr<std::deque<SockWr>>> global_send_queue;
+  std::deque<std::shared_ptr<std::deque<TcpWr>>> global_send_queue;
 };
 
 } // namespace pccl
