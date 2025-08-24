@@ -6,7 +6,7 @@ import glob
 from pathlib import Path
 from setuptools import find_packages
 from setuptools.command.build_py import build_py
-from torch.utils.cpp_extension import CppExtension, CUDA_HOME
+from torch.utils.cpp_extension import BuildExtension, CppExtension, CUDA_HOME
 
 current_dir = os.path.dirname(os.path.realpath(__file__))
 
@@ -18,10 +18,10 @@ def get_all_files(directory):
 sources = get_all_files(os.path.join(current_dir, 'csrc'))
 build_include_dirs = [
     f'{CUDA_HOME}/include',
-    'include',
-    'thirdparty/cutlass/include',
-    'thirdparty/composable_kernel/include',
-    'thirdparty/json/include',
+    f'{current_dir}/include',
+    f'{current_dir}/thirdparty/cutlass/include',
+    f'{current_dir}/thirdparty/composable_kernel/include',
+    f'{current_dir}/thirdparty/json/include',
 ]
 
 build_libraries = ['cuda', 'cudart', 'nvrtc']
@@ -31,17 +31,16 @@ build_library_dirs = [
 ]
 
 cxx_flags = ['-std=c++20',
-             '-O3',
              '-fPIC',
              '-fvisibility=hidden']
 
 data_include_dirs = [
-    'include/plugins/acu',
-    'include/plugins/aroc',
-    'thirdparty/cutlass/include/cute',
-    'thirdparty/cutlass/include/cutlass',
-    'thirdparty/composable_kernel/include/ck',
-    'thirdparty/composable_kernel/include/ck_tile',
+    f'{current_dir}/include/plugins/acu',
+    f'{current_dir}/include/plugins/aroc',
+    f'{current_dir}/thirdparty/cutlass/include/cute',
+    f'{current_dir}/thirdparty/cutlass/include/cutlass',
+    f'{current_dir}/thirdparty/composable_kernel/include/ck',
+    f'{current_dir}/thirdparty/composable_kernel/include/ck_tile',
 ]
 
 class CustomBuildPy(build_py):
@@ -62,8 +61,6 @@ class CustomBuildPy(build_py):
                 shutil.rmtree(dst_dir)
 
             shutil.copytree(src_dir, dst_dir)
-
-print(sources)
 
 if __name__ == '__main__':
     try:
@@ -86,16 +83,16 @@ if __name__ == '__main__':
             ]
         },
         ext_modules=[
-            CppExtension(name='pccl._C',
-                        sources=sources,
-                        include_dirs=build_include_dirs,
-                        libraries=build_libraries,
-                        library_dirs=build_library_dirs,
-                        extra_compile_args=cxx_flags)
+            CppExtension(name='cccl',
+                         sources=sources,
+                         include_dirs=build_include_dirs,
+                         libraries=build_libraries,
+                         library_dirs=build_library_dirs,
+                         extra_compile_args=cxx_flags)
         ],
         zip_safe=False,
         cmdclass={
-            'build_py': CustomBuildPy,
+            'build_py': CustomBuildPy, 'build_ext': BuildExtension,
         },
     )
 
