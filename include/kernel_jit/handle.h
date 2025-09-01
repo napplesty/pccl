@@ -105,7 +105,7 @@ public:
     if constexpr (requires { Derived::operator_type; }) {
       return Derived::operator_type;
     }
-    return OperatorType::COMPUTE;
+    return OperatorType::SYNC_COMPUTE;
   }
 
 private:
@@ -150,7 +150,7 @@ public:
     if constexpr (sizeof...(Ops) > 0) {
       return std::tuple_element_t<0, std::tuple<Ops...>>::type();
     }
-    return OperatorType::COMPUTE;
+    return OperatorType::SYNC_COMPUTE;
   }
 };
 
