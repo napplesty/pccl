@@ -81,17 +81,11 @@ public:
   Status read(const MemoryRegion& local_mr, size_t local_offset, 
             const MemoryRegion& remote_mr, size_t remote_offset, size_t length, void* context = nullptr);
 
-  // 供TcpManager调用的处理函数
-  void process_io();
-  bool has_pending_io() const;
-
   int get_id() const { return id_; }
   int get_socket() const { return sockfd_; }
   bool is_connected() const { return connected_; }
 
 private:
-  friend class TcpManager;
-  
   TcpManager* manager_;
   int id_;
   int sockfd_;
@@ -99,22 +93,14 @@ private:
   bool connected_;
   EndpointConfig config_;
   
-  // 待处理的IO操作
-  struct PendingIO {
-    enum Type { SEND, RECV } type;
-    MemoryRegion mr;
-    size_t offset;
-    size_t length;
-    void* context;
-  };
-  
-  std::queue<PendingIO> pending_io_;
-  std::mutex io_mutex_;
+  Status establish_connection(const std::string& ip, int port);
+  Status send_data(const void* data, size_t length);
+  Status recv_data(void* buffer, size_t length);
 };
 
 class TcpManager {
 public:
-  TcpManager(int io_threads = 1);
+  TcpManager();
   ~TcpManager();
 
   static TcpManager& instance() {
@@ -128,28 +114,14 @@ public:
 
   void set_completion_callback(CompletionCallback callback);
   void add_completion_event(const CompletionEvent& event);
-  Status get_completion_event(CompletionEvent& event, int timeout_ms = -1);
-
-  void start();
-  void stop();
 
 private:
-  void io_thread_func(int thread_id);
-  void process_endpoints();
-
-  std::atomic<bool> stop_io_threads_;
-  std::vector<std::thread> io_threads_;
   std::mutex endpoints_mutex_;
   std::map<int, std::unique_ptr<Endpoint>> endpoints_;
   int next_endpoint_id_;
-
-  std::mutex completion_mutex_;
-  std::condition_variable completion_cv_;
-  std::queue<CompletionEvent> completion_queue_;
   CompletionCallback completion_callback_;
 };
 
-// Endpoint implementation
 Endpoint::Endpoint(TcpManager* manager, int id) : manager_(manager), id_(id), sockfd_(-1), listenfd_(-1), connected_(false) {}
 
 Endpoint::~Endpoint() {
@@ -175,36 +147,47 @@ Status Endpoint::deregister_memory_region(MemoryRegion& mr) {
   return SUCCESS;
 }
 
-Status Endpoint::connect(const std::string& remote_ip, int remote_port) {
-  if (connected_) {
-    return FAILURE;
-  }
-
+Status Endpoint::establish_connection(const std::string& ip, int port) {
   sockfd_ = socket(AF_INET, SOCK_STREAM, 0);
   if (sockfd_ < 0) {
     return FAILURE;
   }
 
-  // 设置为非阻塞
-  int flags = fcntl(sockfd_, F_GETFL, 0);
-  fcntl(sockfd_, F_SETFL, flags | O_NONBLOCK);
-
   struct sockaddr_in server_addr;
   memset(&server_addr, 0, sizeof(server_addr));
   server_addr.sin_family = AF_INET;
-  server_addr.sin_port = htons(remote_port);
-  inet_pton(AF_INET, remote_ip.c_str(), &server_addr.sin_addr);
+  server_addr.sin_port = htons(port);
+  inet_pton(AF_INET, ip.c_str(), &server_addr.sin_addr);
 
-  // 非阻塞连接
-  int result = ::connect(sockfd_, (struct sockaddr*)&server_addr, sizeof(server_addr));
-  if (result < 0 && errno != EINPROGRESS) {
+  if (::connect(sockfd_, (struct sockaddr*)&server_addr, sizeof(server_addr)) < 0) {
     close(sockfd_);
     sockfd_ = -1;
     return FAILURE;
   }
 
-  // 连接正在进行中，等待IO线程处理
+  const uint32_t magic = 0x52444D41;
+  if (send_data(&magic, sizeof(magic)) != SUCCESS) {
+    close(sockfd_);
+    sockfd_ = -1;
+    return FAILURE;
+  }
+
+  uint32_t response;
+  if (recv_data(&response, sizeof(response)) != SUCCESS || response != magic) {
+    close(sockfd_);
+    sockfd_ = -1;
+    return FAILURE;
+  }
+
+  connected_ = true;
   return SUCCESS;
+}
+
+Status Endpoint::connect(const std::string& remote_ip, int remote_port) {
+  if (connected_) {
+    return FAILURE;
+  }
+  return establish_connection(remote_ip, remote_port);
 }
 
 Status Endpoint::listen(int backlog) {
@@ -234,10 +217,6 @@ Status Endpoint::listen(int backlog) {
     return FAILURE;
   }
 
-  // 设置为非阻塞
-  int flags = fcntl(listenfd_, F_GETFL, 0);
-  fcntl(listenfd_, F_SETFL, flags | O_NONBLOCK);
-
   return SUCCESS;
 }
 
@@ -249,27 +228,25 @@ Status Endpoint::accept() {
   struct sockaddr_in client_addr;
   socklen_t client_len = sizeof(client_addr);
   
-  int client_fd = ::accept(listenfd_, (struct sockaddr*)&client_addr, &client_len);
-  if (client_fd < 0) {
-    if (errno == EWOULDBLOCK || errno == EAGAIN) {
-      return SUCCESS; // 没有连接待接受，但不是错误
-    }
+  sockfd_ = ::accept(listenfd_, (struct sockaddr*)&client_addr, &client_len);
+  if (sockfd_ < 0) {
     return FAILURE;
   }
 
-  // 设置为非阻塞
-  int flags = fcntl(client_fd, F_GETFL, 0);
-  fcntl(client_fd, F_SETFL, flags | O_NONBLOCK);
+  uint32_t magic;
+  if (recv_data(&magic, sizeof(magic)) != SUCCESS || magic != 0x52444D41) {
+    close(sockfd_);
+    sockfd_ = -1;
+    return FAILURE;
+  }
 
-  sockfd_ = client_fd;
+  if (send_data(&magic, sizeof(magic)) != SUCCESS) {
+    close(sockfd_);
+    sockfd_ = -1;
+    return FAILURE;
+  }
+
   connected_ = true;
-  
-  CompletionEvent event;
-  event.type = CONNECTION_EVENT;
-  event.status = SUCCESS;
-  event.endpoint_id = id_;
-  manager_->add_completion_event(event);
-  
   return SUCCESS;
 }
 
@@ -289,6 +266,30 @@ Status Endpoint::disconnect() {
   return SUCCESS;
 }
 
+Status Endpoint::send_data(const void* data, size_t length) {
+  ssize_t total_sent = 0;
+  while (total_sent < static_cast<ssize_t>(length)) {
+    ssize_t sent = send(sockfd_, static_cast<const char*>(data) + total_sent, length - total_sent, 0);
+    if (sent < 0) {
+      return FAILURE;
+    }
+    total_sent += sent;
+  }
+  return SUCCESS;
+}
+
+Status Endpoint::recv_data(void* buffer, size_t length) {
+  ssize_t total_received = 0;
+  while (total_received < static_cast<ssize_t>(length)) {
+    ssize_t received = recv(sockfd_, static_cast<char*>(buffer) + total_received, length - total_received, 0);
+    if (received <= 0) {
+      return received == 0 ? CONNECTION_CLOSED : FAILURE;
+    }
+    total_received += received;
+  }
+  return SUCCESS;
+}
+
 Status Endpoint::post_send(const MemoryRegion& mr, size_t offset, size_t length, void* context) {
   if (!connected_ || sockfd_ < 0) {
     return FAILURE;
@@ -298,8 +299,25 @@ Status Endpoint::post_send(const MemoryRegion& mr, size_t offset, size_t length,
     return FAILURE;
   }
 
-  std::lock_guard<std::mutex> lock(io_mutex_);
-  pending_io_.push({PendingIO::SEND, mr, offset, length, context});
+  uint32_t net_length = htonl(static_cast<uint32_t>(length));
+  if (send_data(&net_length, sizeof(net_length)) != SUCCESS) {
+    disconnect();
+    return FAILURE;
+  }
+
+  if (send_data(static_cast<char*>(mr.addr) + offset, length) != SUCCESS) {
+    disconnect();
+    return FAILURE;
+  }
+
+  CompletionEvent event;
+  event.type = SEND_COMPLETION;
+  event.status = SUCCESS;
+  event.byte_count = length;
+  event.context = context;
+  event.endpoint_id = id_;
+  manager_->add_completion_event(event);
+
   return SUCCESS;
 }
 
@@ -312,207 +330,62 @@ Status Endpoint::post_recv(const MemoryRegion& mr, size_t offset, size_t length,
     return FAILURE;
   }
 
-  std::lock_guard<std::mutex> lock(io_mutex_);
-  pending_io_.push({PendingIO::RECV, mr, offset, length, context});
+  uint32_t net_length;
+  if (recv_data(&net_length, sizeof(net_length)) != SUCCESS) {
+    disconnect();
+    return FAILURE;
+  }
+
+  uint32_t msg_length = ntohl(net_length);
+  if (msg_length > length) {
+    return FAILURE;
+  }
+
+  if (recv_data(static_cast<char*>(mr.addr) + offset, msg_length) != SUCCESS) {
+    disconnect();
+    return FAILURE;
+  }
+
+  CompletionEvent event;
+  event.type = RECV_COMPLETION;
+  event.status = SUCCESS;
+  event.byte_count = msg_length;
+  event.context = context;
+  event.endpoint_id = id_;
+  manager_->add_completion_event(event);
+
   return SUCCESS;
 }
 
 Status Endpoint::write(const MemoryRegion& local_mr, size_t local_offset, 
                        const MemoryRegion& remote_mr, size_t remote_offset, 
                        size_t length, void* context) {
-  return post_send(local_mr, local_offset, length, context);
+  Status status = establish_connection(config_.ip, config_.port);
+  if (status != SUCCESS) {
+    return status;
+  }
+
+  status = post_send(local_mr, local_offset, length, context);
+  disconnect();
+  return status;
 }
 
 Status Endpoint::read(const MemoryRegion& local_mr, size_t local_offset, 
                       const MemoryRegion& remote_mr, size_t remote_offset, 
                       size_t length, void* context) {
-  return post_recv(local_mr, local_offset, length, context);
+  Status status = establish_connection(config_.ip, config_.port);
+  if (status != SUCCESS) {
+    return status;
+  }
+
+  status = post_recv(local_mr, local_offset, length, context);
+  disconnect();
+  return status;
 }
 
-void Endpoint::process_io() {
-  // 处理连接状态
-  if (sockfd_ >= 0 && !connected_) {
-    // 检查非阻塞连接是否完成
-    int error = 0;
-    socklen_t len = sizeof(error);
-    if (getsockopt(sockfd_, SOL_SOCKET, SO_ERROR, &error, &len) < 0) {
-      disconnect();
-      return;
-    }
-    
-    if (error == 0) {
-      connected_ = true;
-      CompletionEvent event;
-      event.type = CONNECTION_EVENT;
-      event.status = SUCCESS;
-      event.endpoint_id = id_;
-      manager_->add_completion_event(event);
-    } else {
-      disconnect();
-      CompletionEvent event;
-      event.type = CONNECTION_EVENT;
-      event.status = FAILURE;
-      event.endpoint_id = id_;
-      manager_->add_completion_event(event);
-      return;
-    }
-  }
-  
-  // 处理监听socket
-  if (listenfd_ >= 0) {
-    accept();
-  }
-  
-  // 处理待处理的IO操作
-  std::queue<PendingIO> io_ops;
-  {
-    std::lock_guard<std::mutex> lock(io_mutex_);
-    io_ops = std::move(pending_io_);
-  }
-  
-  while (!io_ops.empty()) {
-    auto& io = io_ops.front();
-    
-    if (io.type == PendingIO::SEND) {
-      char* data = static_cast<char*>(io.mr.addr) + io.offset;
-      
-      // 先发送长度信息
-      uint32_t net_length = htonl(static_cast<uint32_t>(io.length));
-      ssize_t sent = send(sockfd_, &net_length, sizeof(net_length), MSG_NOSIGNAL | MSG_DONTWAIT);
-      
-      if (sent == sizeof(net_length)) {
-        // 发送实际数据
-        sent = send(sockfd_, data, io.length, MSG_NOSIGNAL | MSG_DONTWAIT);
-        
-        if (sent == static_cast<ssize_t>(io.length)) {
-          CompletionEvent event;
-          event.type = SEND_COMPLETION;
-          event.status = SUCCESS;
-          event.byte_count = io.length;
-          event.context = io.context;
-          event.endpoint_id = id_;
-          manager_->add_completion_event(event);
-        } else if (sent < 0 && (errno == EWOULDBLOCK || errno == EAGAIN)) {
-          // 发送缓冲区满，重新加入队列
-          std::lock_guard<std::mutex> lock(io_mutex_);
-          pending_io_.push(io);
-        } else {
-          // 发送失败
-          CompletionEvent event;
-          event.type = SEND_COMPLETION;
-          event.status = FAILURE;
-          event.byte_count = 0;
-          event.context = io.context;
-          event.endpoint_id = id_;
-          manager_->add_completion_event(event);
-        }
-      } else if (sent < 0 && (errno == EWOULDBLOCK || errno == EAGAIN)) {
-        // 发送缓冲区满，重新加入队列
-        std::lock_guard<std::mutex> lock(io_mutex_);
-        pending_io_.push(io);
-      } else {
-        // 发送失败
-        CompletionEvent event;
-        event.type = SEND_COMPLETION;
-        event.status = FAILURE;
-        event.byte_count = 0;
-        event.context = io.context;
-        event.endpoint_id = id_;
-        manager_->add_completion_event(event);
-      }
-    } else if (io.type == PendingIO::RECV) {
-      char* data = static_cast<char*>(io.mr.addr) + io.offset;
-      
-      // 先接收长度信息
-      uint32_t net_length;
-      ssize_t received = recv(sockfd_, &net_length, sizeof(net_length), MSG_DONTWAIT);
-      
-      if (received == sizeof(net_length)) {
-        uint32_t msg_length = ntohl(net_length);
-        
-        if (msg_length <= io.length) {
-          // 接收实际数据
-          received = recv(sockfd_, data, msg_length, MSG_DONTWAIT);
-          
-          if (received == static_cast<ssize_t>(msg_length)) {
-            CompletionEvent event;
-            event.type = RECV_COMPLETION;
-            event.status = SUCCESS;
-            event.byte_count = msg_length;
-            event.context = io.context;
-            event.endpoint_id = id_;
-            manager_->add_completion_event(event);
-          } else if (received < 0 && (errno == EWOULDBLOCK || errno == EAGAIN)) {
-            // 数据未就绪，重新加入队列
-            std::lock_guard<std::mutex> lock(io_mutex_);
-            pending_io_.push(io);
-          } else {
-            // 接收失败
-            CompletionEvent event;
-            event.type = RECV_COMPLETION;
-            event.status = FAILURE;
-            event.byte_count = 0;
-            event.context = io.context;
-            event.endpoint_id = id_;
-            manager_->add_completion_event(event);
-          }
-        } else {
-          // 消息太大，无法放入缓冲区
-          CompletionEvent event;
-          event.type = RECV_COMPLETION;
-          event.status = FAILURE;
-          event.byte_count = 0;
-          event.context = io.context;
-          event.endpoint_id = id_;
-          manager_->add_completion_event(event);
-        }
-      } else if (received < 0 && (errno == EWOULDBLOCK || errno == EAGAIN)) {
-        // 数据未就绪，重新加入队列
-        std::lock_guard<std::mutex> lock(io_mutex_);
-        pending_io_.push(io);
-      } else if (received == 0) {
-        // 连接关闭
-        CompletionEvent event;
-        event.type = RECV_COMPLETION;
-        event.status = CONNECTION_CLOSED;
-        event.byte_count = 0;
-        event.context = io.context;
-        event.endpoint_id = id_;
-        manager_->add_completion_event(event);
-        disconnect();
-      } else {
-        // 接收失败
-        CompletionEvent event;
-        event.type = RECV_COMPLETION;
-        event.status = FAILURE;
-        event.byte_count = 0;
-        event.context = io.context;
-        event.endpoint_id = id_;
-        manager_->add_completion_event(event);
-      }
-    }
-    
-    io_ops.pop();
-  }
-}
-
-bool Endpoint::has_pending_io() const {
-  std::lock_guard<std::mutex> lock(io_mutex_);
-  return !pending_io_.empty() || 
-         (sockfd_ >= 0 && !connected_) || 
-         (listenfd_ >= 0);
-}
-
-// TcpManager implementation
-TcpManager::TcpManager(int io_threads) : stop_io_threads_(false), next_endpoint_id_(0) {
-  for (int i = 0; i < io_threads; i++) {
-    io_threads_.emplace_back(&TcpManager::io_thread_func, this, i);
-  }
-}
+TcpManager::TcpManager() : next_endpoint_id_(0) {}
 
 TcpManager::~TcpManager() {
-  stop();
-  
   std::lock_guard<std::mutex> lock(endpoints_mutex_);
   endpoints_.clear();
 }
@@ -545,106 +418,8 @@ void TcpManager::set_completion_callback(CompletionCallback callback) {
 }
 
 void TcpManager::add_completion_event(const CompletionEvent& event) {
-  std::lock_guard<std::mutex> lock(completion_mutex_);
-  completion_queue_.push(event);
-  completion_cv_.notify_one();
-  
   if (completion_callback_) {
     completion_callback_(event);
-  }
-}
-
-Status TcpManager::get_completion_event(CompletionEvent& event, int timeout_ms) {
-  std::unique_lock<std::mutex> lock(completion_mutex_);
-  
-  if (completion_queue_.empty()) {
-    if (timeout_ms < 0) {
-      completion_cv_.wait(lock, [this] { return !completion_queue_.empty() || stop_io_threads_; });
-    } else {
-      auto status = completion_cv_.wait_for(lock, std::chrono::milliseconds(timeout_ms),
-                                          [this] { return !completion_queue_.empty() || stop_io_threads_; });
-      if (!status) {
-        return TIMEOUT;
-      }
-    }
-  }
-  
-  if (stop_io_threads_) {
-    return FAILURE;
-  }
-  
-  if (!completion_queue_.empty()) {
-    event = completion_queue_.front();
-    completion_queue_.pop();
-    return SUCCESS;
-  }
-  
-  return FAILURE;
-}
-
-void TcpManager::start() {
-  stop_io_threads_ = false;
-}
-
-void TcpManager::stop() {
-  stop_io_threads_ = true;
-  for (auto& thread : io_threads_) {
-    if (thread.joinable()) {
-      thread.join();
-    }
-  }
-  io_threads_.clear();
-}
-
-void TcpManager::io_thread_func(int thread_id) {
-  // 准备poll文件描述符
-  std::vector<pollfd> fds;
-  std::vector<Endpoint*> endpoints;
-  
-  while (!stop_io_threads_) {
-    // 获取所有端点
-    {
-      std::lock_guard<std::mutex> lock(endpoints_mutex_);
-      endpoints.clear();
-      fds.clear();
-      
-      for (auto& pair : endpoints_) {
-        Endpoint* ep = pair.second.get();
-        endpoints.push_back(ep);
-        
-        if (ep->get_socket() >= 0) {
-          pollfd pfd;
-          pfd.fd = ep->get_socket();
-          pfd.events = POLLIN | POLLOUT;
-          pfd.revents = 0;
-          fds.push_back(pfd);
-        }
-        
-        if (ep->has_pending_io()) {
-          ep->process_io();
-        }
-      }
-    }
-    
-    // 如果没有文件描述符需要监视，休眠一会儿
-    if (fds.empty()) {
-      std::this_thread::sleep_for(std::chrono::milliseconds(10));
-      continue;
-    }
-    
-    // 使用poll等待IO事件
-    int result = poll(fds.data(), fds.size(), 10);
-    if (result > 0) {
-      // 处理有事件的端点
-      for (size_t i = 0; i < fds.size(); i++) {
-        if (fds[i].revents & (POLLIN | POLLOUT | POLLERR | POLLHUP)) {
-          endpoints[i]->process_io();
-        }
-      }
-    } else if (result < 0) {
-      // poll错误
-      std::this_thread::sleep_for(std::chrono::milliseconds(10));
-    }
   }
 }
 

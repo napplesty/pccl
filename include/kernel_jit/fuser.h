@@ -8,21 +8,21 @@
 
 namespace pccl {
 
-class CxxFuser {
+class CxxOpFuser {
 public:
   static std::filesystem::path library_root_path;
   static std::filesystem::path library_include_path;
   static std::filesystem::path cache_path;
   static uint64_t              library_version;
 
-  CxxFuser();
-  ~CxxFuser();
+  CxxOpFuser();
+  ~CxxOpFuser();
 
-  CxxFuser(const CxxFuser&) = delete;
-  CxxFuser& operator=(const CxxFuser&) = delete;
+  CxxOpFuser(const CxxOpFuser&) = delete;
+  CxxOpFuser& operator=(const CxxOpFuser&) = delete;
 
-  CxxFuser(CxxFuser&& other) noexcept;
-  CxxFuser& operator=(CxxFuser&& other) noexcept;
+  CxxOpFuser(CxxOpFuser&& other) noexcept;
+  CxxOpFuser& operator=(CxxOpFuser&& other) noexcept;
 
   std::function<void(char**)> &compile(std::string_view operators);
 
