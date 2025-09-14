@@ -53,12 +53,13 @@ build_include_dirs = [
     f'{current_dir}/thirdparty/composable_kernel/include',
     f'{current_dir}/thirdparty/json/include',
     f'{current_dir}/thirdparty/hwloc/include',
+    f'{current_dir}/thirdparty/spdlog/include',
 ]
 build_libraries = ['cuda', 'cudart', 'nvrtc']
 build_library_dirs = [
     f'{CUDA_HOME}/lib64',
-    f'{CUDA_HOME}/lib64/stubs'
-    f'{CUDA_HOME}/targets/x86_64-linux/lib/stubs/'
+    f'{CUDA_HOME}/lib64/stubs',
+    f'{CUDA_HOME}/targets/x86_64-linux/lib/stubs/',
 ]
 
 cxx_flags = ['-std=c++20',
