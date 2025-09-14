@@ -1,11 +1,16 @@
+#pragma once
+
+#include <string>
 #include "configs/verbs_config.h"
 #include "utils/logging.h"
-#include <format>
 
 namespace pccl {
 
 static std::string getEnv(const std::string &env_name) {
-  std::string env = std::getenv(env_name.c_str());
+  const char *env = std::getenv(env_name.c_str());
+  if (env == nullptr) {
+    return "";
+  }
   PCCL_DLOG_INFO(std::format("roce config environment: {}:{}", env_name, env));
   return env;
 }

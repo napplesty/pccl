@@ -473,24 +473,22 @@ private:
 struct VerbsRemotePeerInfo {
   uint32_t qp_num;
   uint16_t lid;
-  uint32_t qkey;
   union ibv_gid gid;
     
-  VerbsRemotePeerInfo() : qp_num(0), lid(0), qkey(VerbsConfig::getInstance().qkey) {
+  VerbsRemotePeerInfo() : qp_num(0), lid(0) {
     std::memset(&gid, 0, sizeof(gid));
   }
     
   VerbsRemotePeerInfo(const VerbsRemotePeerInfo& other)
-    : qp_num(other.qp_num), lid(other.lid), qkey(other.qkey) {
+    : qp_num(other.qp_num), lid(other.lid) {
     std::memcpy(&gid, &other.gid, sizeof(gid));
   }
     
   VerbsRemotePeerInfo(VerbsRemotePeerInfo&& other) noexcept
-    : qp_num(other.qp_num), lid(other.lid), qkey(other.qkey) {
+    : qp_num(other.qp_num), lid(other.lid) {
     std::memcpy(&gid, &other.gid, sizeof(gid));
     other.qp_num = 0;
     other.lid = 0;
-    other.qkey = VerbsConfig::getInstance().qkey;
     std::memset(&other.gid, 0, sizeof(gid));
   }
     
@@ -498,7 +496,6 @@ struct VerbsRemotePeerInfo {
     if (this != &other) {
       qp_num = other.qp_num;
       lid = other.lid;
-      qkey = other.qkey;
       std::memcpy(&gid, &other.gid, sizeof(gid));
     }
     return *this;
@@ -508,11 +505,9 @@ struct VerbsRemotePeerInfo {
     if (this != &other) {
       qp_num = other.qp_num;
       lid = other.lid;
-      qkey = other.qkey;
       std::memcpy(&gid, &other.gid, sizeof(gid));
       other.qp_num = 0;
       other.lid = 0;
-      other.qkey = VerbsConfig::getInstance().qkey;
       std::memset(&other.gid, 0, sizeof(gid));
     }
     return *this;
@@ -721,11 +716,10 @@ public:
         
         if (!modifyQPToRTR(conn_id, qp_id, 
                   remote_peer_info.qp_num,
-                  remote_peer_info.qkey,
                   remote_peer_info.lid,
-                  0, // sl
+                  0,
                   conn_info.config.port_num,
-                  0, // pkey_index
+                  0,
                   &remote_peer_info.gid)) {
           PCCL_DLOG_DEBUG(std::format("Failed to modify QP {} to RTR state.", qp_id));
           return false;
@@ -833,7 +827,7 @@ public:
   }
 
   bool modifyQPToRTR(ConnectionId conn_id, QPId qp_id, 
-              uint32_t remote_qpn, uint32_t remote_qkey, uint16_t dlid, uint8_t sl, 
+              uint32_t remote_qpn, uint16_t dlid, uint8_t sl, 
               uint8_t port_num, uint16_t pkey_index, 
               const ibv_gid* sgid) {
     PCCL_DLOG_DEBUG(std::format("Modifying QP {} on conn {} to RTR state. Remote QPN: {}, Remote LID: {}", qp_id, conn_id, remote_qpn, dlid));
@@ -851,12 +845,11 @@ public:
     
     ibv_qp_attr attr{};
     attr.qp_state = IBV_QPS_RTR;
-    attr.path_mtu = IBV_MTU_1024;
+    attr.path_mtu = IBV_MTU_4096;
     attr.dest_qp_num = remote_qpn;
     attr.rq_psn = 0;
     attr.max_dest_rd_atomic = 1;
     attr.min_rnr_timer = 12;
-    attr.qkey = remote_qkey;
     attr.ah_attr.dlid = dlid;
     attr.ah_attr.sl = sl;
     attr.ah_attr.src_path_bits = 0;
@@ -876,7 +869,7 @@ public:
     try {
       qp->modify(attr, IBV_QP_STATE | IBV_QP_AV | IBV_QP_PATH_MTU | 
                         IBV_QP_DEST_QPN | IBV_QP_RQ_PSN | IBV_QP_MAX_DEST_RD_ATOMIC | 
-                        IBV_QP_MIN_RNR_TIMER | IBV_QP_QKEY);
+                        IBV_QP_MIN_RNR_TIMER);
       PCCL_DLOG_DEBUG(std::format("QP {} successfully moved to RTR state.", qp_id));
       return true;
     } catch (const RuntimeException& e) {
@@ -894,10 +887,11 @@ public:
     }
     
     ibv_qp_attr attr{};
+
     attr.qp_state = IBV_QPS_RTS;
-    attr.timeout = 14;
-    attr.retry_cnt = 7;
-    attr.rnr_retry = 7;
+    attr.timeout = 15;
+    attr.retry_cnt = 5;
+    attr.rnr_retry = 5;
     attr.sq_psn = 0;
     attr.max_rd_atomic = 1;
     
@@ -918,13 +912,9 @@ public:
       PCCL_DLOG_DEBUG(std::format("QP {} not found. Failed.", qp_id));
       return false;
     }
-    try {
-      qp->postSend(wr, bad_wr);
-      return true;
-    } catch (const RuntimeException& e) {
-      PCCL_DLOG_DEBUG(std::format("Exception during postSend on QP {}: {}", qp_id, e.what()));
-      return false;
-    }
+    int status = qp->postSend(wr, bad_wr);
+    if (status) PCCL_LOG_ERROR(std::format("QP post send error {}", status));
+    return true;
   }
 
   bool postRecv(ConnectionId conn_id, QPId qp_id, ibv_recv_wr* wr, ibv_recv_wr** bad_wr) {
@@ -933,13 +923,9 @@ public:
       PCCL_DLOG_DEBUG(std::format("QP {} not found. Failed.", qp_id));
       return false;
     }
-    try {
-      qp->postRecv(wr, bad_wr);
-      return true;
-    } catch (const RuntimeException& e) {
-      PCCL_DLOG_DEBUG(std::format("Exception during postRecv on QP {}: {}", qp_id, e.what()));
-      return false;
-    }
+    int status = qp->postRecv(wr, bad_wr);
+    if (status) PCCL_LOG_ERROR(std::format("QP post send error {}", status));
+    return true;
   }
 
   int pollCQ(ConnectionId conn_id, int num_entries, ibv_wc* wc) {
@@ -952,8 +938,8 @@ public:
     if (num_completions > 0) {
       PCCL_DLOG_DEBUG(std::format("Polled CQ for conn {}, got {} completions.", conn_id, num_completions));
       for (int i = 0; i < num_completions; ++i) {
-        PCCL_DLOG_DEBUG(std::format(" WC[{}]: wr_id={}, status={} ({}), opcode={}", 
-          i, wc[i].wr_id, VerbsLib::getInstance().wcStatusStr(wc[i].status), wc[i].status, wc[i].opcode));
+        PCCL_DLOG_DEBUG(std::format(" WC[{}]: wr_id={}, status={}", 
+          i, wc[i].wr_id, VerbsLib::getInstance().wcStatusStr(wc[i].status)));
       }
     } else if (num_completions < 0) {
       PCCL_DLOG_DEBUG(std::format("Error polling CQ for conn {}, pollCq returned {}", conn_id, num_completions));
@@ -1019,7 +1005,6 @@ public:
     
     VerbsRemotePeerInfo metadata;
     metadata.qp_num = qp_it->second->getQpNum();
-    metadata.qkey = VerbsConfig::getInstance().qkey;
     
     try {
       ibv_port_attr port_attr = context_->queryPort(conn_it->second.config.port_num);
@@ -1037,8 +1022,8 @@ public:
       std::memset(&metadata.gid, 0, sizeof(ibv_gid));
     }
     
-    PCCL_DLOG_DEBUG(std::format("Generated metadata: qp_num={}, lid={}, qkey=0x{:x}", 
-      metadata.qp_num, metadata.lid, metadata.qkey));
+    PCCL_DLOG_DEBUG(std::format("Generated metadata: qp_num={}, lid={}", 
+      metadata.qp_num, metadata.lid));
     return metadata;
   }
 
