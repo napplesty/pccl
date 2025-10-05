@@ -13,8 +13,7 @@ namespace py = pybind11;
 using namespace pccl;
 using namespace pccl::runtime;
 
-// Python绑定模块
-PYBIND11_MODULE(pccl, m) {
+PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.doc() = "PCCL (Parallel Collective Communication Library) Python Bindings";
 
     // === 枚举类型绑定 ===
