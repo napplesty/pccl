@@ -54,6 +54,7 @@ build_include_dirs = [
     f'{current_dir}/thirdparty/json/include',
     f'{current_dir}/thirdparty/hwloc/include',
     f'{current_dir}/thirdparty/spdlog/include',
+    f'{current_dir}/thirdparty/asio/asio/include',
 ]
 build_libraries = ['cuda', 'cudart', 'nvrtc']
 build_library_dirs = [
@@ -64,7 +65,14 @@ build_library_dirs = [
 
 cxx_flags = ['-std=c++20',
              '-fPIC',
-             '-fvisibility=hidden']
+             '-fvisibility=hidden',
+             '-DASIO_STANDALONE',
+             '-DASIO_HEADER_ONLY',
+            ]
+
+cuda_flags = ['-std=c++20',
+              '-O3',
+             ]
 
 data_include_dirs = [
     f'{current_dir}/include/plugins',
@@ -127,11 +135,19 @@ if __name__ == '__main__':
                          include_dirs=build_include_dirs,
                          libraries=build_libraries,
                          library_dirs=build_library_dirs,
-                         extra_compile_args=cxx_flags)
+                         extra_compile_args={'cxx': cxx_flags, 'cuda': cuda_flags})
+        ],
+        install_requires=[
+            'scipy>=1.15.0',     
+            'PuLP>=3.2.0',      
+            'infomap>=2.7.0',   
+            'z3-solver>=4.15.0', 
+            'networkx>=3.4.0',  
+            'pyscipopt>=5.5.0', 
+            'ortools>=9.13.0',   
         ],
         zip_safe=False,
         cmdclass={
             'build_py': CustomBuildPy, 'build_ext': BuildExtension,
         },
     )
-

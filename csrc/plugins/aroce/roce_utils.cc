@@ -1,0 +1,926 @@
+#include "plugins/aroce/roce_utils.h"
+#include "plugins/aroce/roce_config.h"
+#include <utils/exception.hpp>
+#include <format>
+
+namespace pccl::communicator {
+
+VerbsLib& VerbsLib::getInstance() {
+  static VerbsLib instance;
+  return instance;
+}
+
+void VerbsLib::load(const std::string& library_path) {
+  std::lock_guard<std::mutex> lock(load_mutex_);
+  if (handle_) {
+    return;
+  }
+  handle_ = dlopen(library_path.c_str(), RTLD_LAZY);
+  PCCL_HOST_ASSERT(handle_, std::format("Failed to open {}", library_path));
+
+  #define LOAD_VERBS_FUNC(name) \
+    name##_func = reinterpret_cast<name##_fn>(dlsym(handle_, #name)); \
+    PCCL_HOST_ASSERT(name##_func, std::format("Failed to load function {}", #name));
+
+  LOAD_VERBS_FUNC(ibv_get_device_list)
+  LOAD_VERBS_FUNC(ibv_free_device_list)
+  LOAD_VERBS_FUNC(ibv_get_device_name)
+  LOAD_VERBS_FUNC(ibv_open_device)
+  LOAD_VERBS_FUNC(ibv_close_device)
+  LOAD_VERBS_FUNC(ibv_query_device)
+  LOAD_VERBS_FUNC(ibv_query_port)
+  LOAD_VERBS_FUNC(ibv_query_gid)
+  LOAD_VERBS_FUNC(ibv_alloc_pd)
+  LOAD_VERBS_FUNC(ibv_dealloc_pd)
+  LOAD_VERBS_FUNC(ibv_reg_mr)
+  LOAD_VERBS_FUNC(ibv_dereg_mr)
+  LOAD_VERBS_FUNC(ibv_create_comp_channel)
+  LOAD_VERBS_FUNC(ibv_destroy_comp_channel)
+  LOAD_VERBS_FUNC(ibv_create_cq)
+  LOAD_VERBS_FUNC(ibv_destroy_cq)
+  LOAD_VERBS_FUNC(ibv_get_cq_event)
+  LOAD_VERBS_FUNC(ibv_ack_cq_events)
+  LOAD_VERBS_FUNC(ibv_create_qp)
+  LOAD_VERBS_FUNC(ibv_destroy_qp)
+  LOAD_VERBS_FUNC(ibv_modify_qp)
+  LOAD_VERBS_FUNC(ibv_wc_status_str)
+  #undef LOAD_VERBS_FUNC
+}
+
+VerbsLib::~VerbsLib() {
+  std::lock_guard<std::mutex> lock(load_mutex_);
+  if (handle_) {
+    dlclose(handle_);
+    handle_ = nullptr;
+  }
+}
+
+ibv_device** VerbsLib::getDeviceList(int* num_devices) { 
+  return ibv_get_device_list_func(num_devices); 
+}
+
+int VerbsLib::freeDeviceList(ibv_device** list) { 
+  return ibv_free_device_list_func(list); 
+}
+
+const char* VerbsLib::getDeviceName(ibv_device* device) { 
+  return ibv_get_device_name_func(device); 
+}
+
+ibv_context* VerbsLib::openDevice(ibv_device* device) { 
+  return ibv_open_device_func(device); 
+}
+
+int VerbsLib::closeDevice(ibv_context* context) { 
+  return ibv_close_device_func(context); 
+}
+
+int VerbsLib::queryDevice(ibv_context* context, ibv_device_attr* device_attr) { 
+  return ibv_query_device_func(context, device_attr); 
+}
+
+int VerbsLib::queryPort(ibv_context* context, uint8_t port_num, ibv_port_attr* port_attr) { 
+  return ibv_query_port_func(context, port_num, port_attr); 
+}
+
+int VerbsLib::queryGid(ibv_context* context, uint8_t port_num, int index, ibv_gid* gid) { 
+  return ibv_query_gid_func(context, port_num, index, gid); 
+}
+
+ibv_pd* VerbsLib::allocPd(ibv_context* context) { 
+  return ibv_alloc_pd_func(context); 
+}
+
+int VerbsLib::deallocPd(ibv_pd* pd) { 
+  return ibv_dealloc_pd_func(pd); 
+}
+
+ibv_mr* VerbsLib::regMr(ibv_pd* pd, void* addr, size_t length, int access) { 
+  return ibv_reg_mr_func(pd, addr, length, access); 
+}
+
+int VerbsLib::deregMr(ibv_mr* mr) { 
+  return ibv_dereg_mr_func(mr); 
+}
+
+ibv_comp_channel* VerbsLib::createCompChannel(ibv_context* context) { 
+  return ibv_create_comp_channel_func(context); 
+}
+
+int VerbsLib::destroyCompChannel(ibv_comp_channel* channel) { 
+  return ibv_destroy_comp_channel_func(channel); 
+}
+
+int VerbsLib::getCqEvent(ibv_comp_channel* channel, ibv_cq** cq, void** cq_context) { 
+  return ibv_get_cq_event_func(channel, cq, cq_context); 
+}
+
+void VerbsLib::ackCqEvents(ibv_cq* cq, unsigned int nevents) { 
+  ibv_ack_cq_events_func(cq, nevents); 
+}
+
+ibv_cq* VerbsLib::createCq(ibv_context* context, int cqe, void* cq_context, ibv_comp_channel* channel, int comp_vector) { 
+  return ibv_create_cq_func(context, cqe, cq_context, channel, comp_vector); 
+}
+
+int VerbsLib::destroyCq(ibv_cq* cq) { 
+  return ibv_destroy_cq_func(cq); 
+}
+
+int VerbsLib::pollCq(ibv_cq* cq, int num_entries, ibv_wc* wc) { 
+  return ibv_poll_cq(cq, num_entries, wc); 
+}
+
+ibv_qp* VerbsLib::createQp(ibv_pd* pd, ibv_qp_init_attr* attr) { 
+  return ibv_create_qp_func(pd, attr); 
+}
+
+int VerbsLib::destroyQp(ibv_qp* qp) { 
+  return ibv_destroy_qp_func(qp); 
+}
+
+int VerbsLib::modifyQp(ibv_qp* qp, ibv_qp_attr* attr, int attr_mask) { 
+  return ibv_modify_qp_func(qp, attr, attr_mask); 
+}
+
+int VerbsLib::postSend(ibv_qp* qp, ibv_send_wr* wr, ibv_send_wr** bad_wr) { 
+  return ibv_post_send(qp, wr, bad_wr); 
+}
+
+int VerbsLib::postRecv(ibv_qp* qp, ibv_recv_wr* wr, ibv_recv_wr** bad_wr) { 
+  return ibv_post_recv(qp, wr, bad_wr); 
+}
+
+int VerbsLib::reqNotifyCq(ibv_cq* cq, int solicited_only) { 
+  return ibv_req_notify_cq(cq, solicited_only); 
+}
+
+const char* VerbsLib::wcStatusStr(enum ibv_wc_status status) { 
+  return ibv_wc_status_str_func(status); 
+}
+
+VerbsDevList::VerbsDevList() {
+  auto& verbs_lib = VerbsLib::getInstance();
+  devices_ = verbs_lib.getDeviceList(&num_devices_);
+  PCCL_HOST_ASSERT(devices_, "Failed to get IB devices");
+}
+
+VerbsDevList::~VerbsDevList() {
+  if (devices_) {
+    VerbsLib::getInstance().freeDeviceList(devices_);
+  }
+}
+
+VerbsDevList::VerbsDevList(VerbsDevList&& other) noexcept 
+  : devices_(other.devices_), num_devices_(other.num_devices_) {
+  other.devices_ = nullptr;
+  other.num_devices_ = 0;
+}
+
+VerbsDevList& VerbsDevList::operator=(VerbsDevList&& other) noexcept {
+  if (this != &other) {
+    if (devices_) VerbsLib::getInstance().freeDeviceList(devices_);
+    devices_ = other.devices_;
+    num_devices_ = other.num_devices_;
+    other.devices_ = nullptr;
+    other.num_devices_ = 0;
+  }
+  return *this;
+}
+
+ibv_device* VerbsDevList::getDevice(int index) const {
+  PCCL_HOST_ASSERT(index >= 0 && index < num_devices_, std::format("Device index out of range: {}", index));
+  return devices_[index];
+}
+
+std::string VerbsDevList::getDeviceName(int index) {
+  ibv_device* dev = getDevice(index);
+  return VerbsLib::getInstance().getDeviceName(dev);
+}
+
+int VerbsDevList::getNumDevices() const { 
+  return num_devices_; 
+}
+
+VerbsContext::VerbsContext(ibv_device* device) {
+  auto& verbs_lib = VerbsLib::getInstance();
+  context_ = verbs_lib.openDevice(device);
+  PCCL_HOST_ASSERT(context_, std::format("Failed to open device: {}", verbs_lib.getDeviceName(device)));
+}
+
+VerbsContext::~VerbsContext() {
+  if (context_) VerbsLib::getInstance().closeDevice(context_);
+}
+
+VerbsContext::VerbsContext(VerbsContext&& other) noexcept : context_(other.context_) {
+  other.context_ = nullptr;
+}
+
+VerbsContext& VerbsContext::operator=(VerbsContext&& other) noexcept {
+  if (this != &other) {
+    if (context_) VerbsLib::getInstance().closeDevice(context_);
+    context_ = other.context_;
+    other.context_ = nullptr;
+  }
+  return *this;
+}
+
+ibv_device_attr VerbsContext::queryDevice() const {
+  ibv_device_attr attr;
+  PCCL_HOST_ASSERT(VerbsLib::getInstance().queryDevice(context_, &attr) == 0, "Failed to query device attributes");
+  return attr;
+}
+
+ibv_port_attr VerbsContext::queryPort(uint8_t port_num) const {
+  ibv_port_attr attr;
+  PCCL_HOST_ASSERT(VerbsLib::getInstance().queryPort(context_, port_num, &attr) == 0, std::format("Failed to query port {} attributes", port_num));
+  return attr;
+}
+
+ibv_gid VerbsContext::queryGid(uint8_t port_num, int index) const {
+  ibv_gid gid;
+  PCCL_HOST_ASSERT(VerbsLib::getInstance().queryGid(context_, port_num, index, &gid) == 0, std::format("Failed to query GID (port {}, index {})", port_num, index));
+  return gid;
+}
+
+ibv_context* VerbsContext::get() const { 
+  return context_; 
+}
+
+VerbsProtectionDomain::VerbsProtectionDomain(const VerbsContext& ctx) {
+  pd_ = VerbsLib::getInstance().allocPd(ctx.get());
+  PCCL_HOST_ASSERT(pd_, "Failed to allocate PD");
+}
+
+VerbsProtectionDomain::~VerbsProtectionDomain() {
+  if (pd_) VerbsLib::getInstance().deallocPd(pd_);
+}
+
+VerbsProtectionDomain::VerbsProtectionDomain(VerbsProtectionDomain&& other) noexcept : pd_(other.pd_) {
+  other.pd_ = nullptr;
+}
+
+VerbsProtectionDomain& VerbsProtectionDomain::operator=(VerbsProtectionDomain&& other) noexcept {
+  if (this != &other) {
+    if (pd_) VerbsLib::getInstance().deallocPd(pd_);
+    pd_ = other.pd_;
+    other.pd_ = nullptr;
+  }
+  return *this;
+}
+
+ibv_pd* VerbsProtectionDomain::get() const { 
+  return pd_; 
+}
+
+VerbsCompChannel::VerbsCompChannel(const VerbsContext& ctx) {
+  channel_ = VerbsLib::getInstance().createCompChannel(ctx.get());
+  PCCL_HOST_ASSERT(channel_, "Failed to create comp channel");
+}
+
+VerbsCompChannel::~VerbsCompChannel() {
+  if (channel_) VerbsLib::getInstance().destroyCompChannel(channel_);
+}
+
+VerbsCompChannel::VerbsCompChannel(VerbsCompChannel&& other) noexcept : channel_(other.channel_) {
+  other.channel_ = nullptr;
+}
+
+VerbsCompChannel& VerbsCompChannel::operator=(VerbsCompChannel&& other) noexcept {
+  if (this != &other) {
+    if (channel_) VerbsLib::getInstance().destroyCompChannel(channel_);
+    channel_ = other.channel_;
+    other.channel_ = nullptr;
+  }
+  return *this;
+}
+
+ibv_comp_channel* VerbsCompChannel::get() const { 
+  return channel_; 
+}
+
+VerbsCompletionQueue::VerbsCompletionQueue(const VerbsContext& ctx, int cqe, void* cq_ctx,
+                      const VerbsCompChannel* channel, int comp_vec) {
+  cq_ = VerbsLib::getInstance().createCq(
+    ctx.get(), cqe, cq_ctx, channel ? channel->get() : nullptr, comp_vec
+  );
+  PCCL_HOST_ASSERT(cq_, "Failed to create CQ");
+}
+
+VerbsCompletionQueue::~VerbsCompletionQueue() {
+  if (cq_) VerbsLib::getInstance().destroyCq(cq_);
+}
+
+VerbsCompletionQueue::VerbsCompletionQueue(VerbsCompletionQueue&& other) noexcept : cq_(other.cq_) {
+  other.cq_ = nullptr;
+}
+
+VerbsCompletionQueue& VerbsCompletionQueue::operator=(VerbsCompletionQueue&& other) noexcept {
+  if (this != &other) {
+    if (cq_) VerbsLib::getInstance().destroyCq(cq_);
+    cq_ = other.cq_;
+    other.cq_ = nullptr;
+  }
+  return *this;
+}
+
+void VerbsCompletionQueue::getEvent(const VerbsCompChannel& channel, VerbsCompletionQueue*& out_cq, void*& out_ctx) {
+  ibv_cq* cq = nullptr;
+  PCCL_HOST_ASSERT(VerbsLib::getInstance().getCqEvent(channel.get(), &cq, &out_ctx) == 0, "Failed to get CQ event");
+  out_cq = static_cast<VerbsCompletionQueue*>(out_ctx);
+}
+
+int VerbsCompletionQueue::poll(int num_entries, ibv_wc* wc) const {
+  return VerbsLib::getInstance().pollCq(cq_, num_entries, wc);
+}
+
+void VerbsCompletionQueue::ackEvents(unsigned int nevents) const {
+  VerbsLib::getInstance().ackCqEvents(cq_, nevents);
+}
+
+ibv_cq* VerbsCompletionQueue::get() const { 
+  return cq_; 
+}
+
+VerbsMemoryRegion::VerbsMemoryRegion(const VerbsProtectionDomain& pd, void* addr, size_t len, int access)
+  : addr_(addr), len_(len) {
+  mr_ = VerbsLib::getInstance().regMr(pd.get(), addr, len, access);
+  PCCL_HOST_ASSERT(mr_, "Failed to register MR");
+  lkey_ = mr_->lkey;
+  rkey_ = mr_->rkey;
+}
+
+VerbsMemoryRegion::~VerbsMemoryRegion() {
+  if (mr_) VerbsLib::getInstance().deregMr(mr_);
+}
+
+VerbsMemoryRegion::VerbsMemoryRegion(VerbsMemoryRegion&& other) noexcept 
+  : mr_(other.mr_), addr_(other.addr_), len_(other.len_), lkey_(other.lkey_), rkey_(other.rkey_) {
+  other.mr_ = nullptr;
+}
+
+VerbsMemoryRegion& VerbsMemoryRegion::operator=(VerbsMemoryRegion&& other) noexcept {
+  if (this != &other) {
+    if (mr_) VerbsLib::getInstance().deregMr(mr_);
+    mr_ = other.mr_;
+    addr_ = other.addr_;
+    len_ = other.len_;
+    lkey_ = other.lkey_;
+    rkey_ = other.rkey_;
+    other.mr_ = nullptr;
+  }
+  return *this;
+}
+
+void* VerbsMemoryRegion::getAddr() const { 
+  return addr_; 
+}
+
+size_t VerbsMemoryRegion::getLength() const { 
+  return len_; 
+}
+
+uint32_t VerbsMemoryRegion::getLKey() const { 
+  return lkey_; 
+}
+
+uint32_t VerbsMemoryRegion::getRKey() const { 
+  return rkey_; 
+}
+
+ibv_mr* VerbsMemoryRegion::get() const { 
+  return mr_; 
+}
+
+VerbsQueuePair::VerbsQueuePair(const VerbsProtectionDomain& pd, const ibv_qp_init_attr& init_attr) {
+  qp_ = VerbsLib::getInstance().createQp(pd.get(), const_cast<ibv_qp_init_attr*>(&init_attr));
+  PCCL_HOST_ASSERT(qp_, "Failed to create QP");
+  qp_num_ = qp_->qp_num;
+}
+
+VerbsQueuePair::~VerbsQueuePair() {
+  if (qp_) VerbsLib::getInstance().destroyQp(qp_);
+}
+
+VerbsQueuePair::VerbsQueuePair(VerbsQueuePair&& other) noexcept 
+  : qp_(other.qp_), qp_num_(other.qp_num_) {
+  other.qp_ = nullptr;
+}
+
+VerbsQueuePair& VerbsQueuePair::operator=(VerbsQueuePair&& other) noexcept {
+  if (this != &other) {
+    if (qp_) VerbsLib::getInstance().destroyQp(qp_);
+    qp_ = other.qp_;
+    qp_num_ = other.qp_num_;
+    other.qp_ = nullptr;
+  }
+  return *this;
+}
+
+int VerbsQueuePair::modify(const ibv_qp_attr& attr, int attr_mask) const {
+  return VerbsLib::getInstance().modifyQp(qp_, const_cast<ibv_qp_attr*>(&attr), attr_mask);
+}
+
+int VerbsQueuePair::postSend(ibv_send_wr* wr, ibv_send_wr** bad_wr) const {
+  return VerbsLib::getInstance().postSend(qp_, wr, bad_wr);
+}
+
+int VerbsQueuePair::postRecv(ibv_recv_wr* wr, ibv_recv_wr** bad_wr) const {
+  return VerbsLib::getInstance().postRecv(qp_, wr, bad_wr);
+}
+
+uint32_t VerbsQueuePair::getQpNum() const { 
+  return qp_num_; 
+}
+
+ibv_qp* VerbsQueuePair::get() const { 
+  return qp_; 
+}
+
+VerbsRemotePeerInfo::VerbsRemotePeerInfo() : qp_num(0), lid(0) {
+  std::memset(&gid, 0, sizeof(gid));
+}
+
+VerbsRemotePeerInfo::VerbsRemotePeerInfo(const VerbsRemotePeerInfo& other)
+  : qp_num(other.qp_num), lid(other.lid) {
+  std::memcpy(&gid, &other.gid, sizeof(gid));
+}
+
+VerbsRemotePeerInfo::VerbsRemotePeerInfo(VerbsRemotePeerInfo&& other) noexcept
+  : qp_num(other.qp_num), lid(other.lid) {
+  std::memcpy(&gid, &other.gid, sizeof(gid));
+  other.qp_num = 0;
+  other.lid = 0;
+  std::memset(&other.gid, 0, sizeof(gid));
+}
+
+VerbsRemotePeerInfo& VerbsRemotePeerInfo::operator=(const VerbsRemotePeerInfo& other) {
+  if (this != &other) {
+    qp_num = other.qp_num;
+    lid = other.lid;
+    std::memcpy(&gid, &other.gid, sizeof(gid));
+  }
+  return *this;
+}
+
+VerbsRemotePeerInfo& VerbsRemotePeerInfo::operator=(VerbsRemotePeerInfo&& other) noexcept {
+  if (this != &other) {
+    qp_num = other.qp_num;
+    lid = other.lid;
+    std::memcpy(&gid, &other.gid, sizeof(gid));
+    other.qp_num = 0;
+    other.lid = 0;
+    std::memset(&other.gid, 0, sizeof(gid));
+  }
+  return *this;
+}
+
+VerbsManager::QPConfig::QPConfig() 
+  : qp_type(IBV_QPT_RC), 
+    max_send_wr(VerbsConfig::getInstance().max_send_wr), 
+    max_recv_wr(VerbsConfig::getInstance().max_recv_wr), 
+    max_send_sge(VerbsConfig::getInstance().max_send_sge), 
+    max_recv_sge(VerbsConfig::getInstance().max_recv_sge), 
+    max_inline_data(VerbsConfig::getInstance().max_inline_data) {}
+
+VerbsManager::ConnectionInfo::ConnectionInfo() = default;
+
+VerbsManager::ConnectionInfo::ConnectionInfo(const ConnectionInfo& other)
+  : config(other.config), cq(other.cq), connected(other.connected.load()) {
+  for (const auto& pair : other.qps) qps[pair.first] = pair.second;
+}
+
+VerbsManager::ConnectionInfo::ConnectionInfo(ConnectionInfo&& other) noexcept
+  : config(std::move(other.config)), cq(std::move(other.cq)), qps(std::move(other.qps)),
+    connected(other.connected.load()) {
+  other.connected = false;
+}
+
+VerbsManager::ConnectionInfo& VerbsManager::ConnectionInfo::operator=(const ConnectionInfo& other) {
+  if (this != &other) {
+    config = other.config;
+    cq = other.cq;
+    connected = other.connected.load();
+    qps.clear();
+    for (const auto& pair : other.qps) qps[pair.first] = pair.second;
+  }
+  return *this;
+}
+
+VerbsManager::ConnectionInfo& VerbsManager::ConnectionInfo::operator=(ConnectionInfo&& other) noexcept {
+  if (this != &other) {
+    config = std::move(other.config);
+    cq = std::move(other.cq);
+    qps = std::move(other.qps);
+    connected = other.connected.load();
+    other.connected = false;
+  }
+  return *this;
+}
+
+VerbsManager::VerbsManager() {
+  VerbsLib::getInstance().load(VerbsConfig::getInstance().lib_path);
+}
+
+VerbsManager::~VerbsManager() {
+  std::lock_guard<std::mutex> lock(connections_mutex_);
+  for (auto& pair : connections_) {
+    if (pair.second.connected) {
+      disconnect(pair.first);
+    }
+  }
+  connections_.clear();
+}
+
+VerbsManager::VerbsManager(VerbsManager&& other) noexcept 
+  : device_list_(std::move(other.device_list_)),
+    context_(std::move(other.context_)),
+    pd_(std::move(other.pd_)),
+    connections_(std::move(other.connections_)),
+    next_connection_id_(other.next_connection_id_.load()),
+    next_qp_id_(other.next_qp_id_.load()),
+    initialized_(other.initialized_.load()) {
+  other.next_connection_id_ = 1;
+  other.next_qp_id_ = 1;
+  other.initialized_ = false;
+}
+
+VerbsManager& VerbsManager::operator=(VerbsManager&& other) noexcept {
+  if (this != &other) {
+    std::lock_guard<std::mutex> lock(connections_mutex_);
+    for (auto& pair : connections_) {
+      if (pair.second.connected) {
+        disconnect(pair.first);
+      }
+    }
+    connections_.clear();
+    
+    device_list_ = std::move(other.device_list_);
+    context_ = std::move(other.context_);
+    pd_ = std::move(other.pd_);
+    connections_ = std::move(other.connections_);
+    next_connection_id_ = other.next_connection_id_.load();
+    next_qp_id_ = other.next_qp_id_.load();
+    initialized_ = other.initialized_.load();
+    
+    other.next_connection_id_ = 1;
+    other.next_qp_id_ = 1;
+    other.initialized_ = false;
+  }
+  return *this;
+}
+
+bool VerbsManager::initialize(const std::string& device_name, uint8_t port_num) {
+  device_list_ = std::make_unique<VerbsDevList>();
+  if (device_list_->getNumDevices() == 0) {
+    return false;
+  }
+  ibv_device* device = nullptr;
+  if (device_name.empty()) {
+    device = device_list_->getDevice(0);
+  } else {
+    for (int i = 0; i < device_list_->getNumDevices(); ++i) {
+      if (device_list_->getDeviceName(i) == device_name) {
+        device = device_list_->getDevice(i);
+        break;
+      }
+    }
+  }
+    
+  if (!device) {
+    return false;
+  }
+      
+  context_ = std::make_unique<VerbsContext>(device);
+  pd_ = std::make_unique<VerbsProtectionDomain>(*context_);
+      
+  initialized_ = true;
+  return true;
+}
+
+VerbsManager::ConnectionId VerbsManager::createConnection(const ConnectionConfig& config) {
+  if (!initialized_.load(std::memory_order_relaxed)) {
+    return 0;
+  }
+        
+  ConnectionId conn_id = generateConnectionId();
+        
+  ConnectionInfo conn_info;
+  conn_info.config = config;
+  conn_info.cq = std::make_shared<VerbsCompletionQueue>(*context_, config.cq_size, nullptr);
+    
+  std::lock_guard<std::mutex> lock(connections_mutex_);
+  connections_[conn_id] = std::move(conn_info);
+    
+  return conn_id;
+}
+
+bool VerbsManager::destroyConnection(ConnectionId conn_id) {
+  std::lock_guard<std::mutex> lock(connections_mutex_);
+  auto it = connections_.find(conn_id);
+  if (it == connections_.end()) {
+    return false;
+  }
+    
+  if (it->second.connected) {
+    disconnect(conn_id);
+  }
+    
+  it->second.qps.clear();
+  connections_.erase(it);
+  return true;
+}
+
+bool VerbsManager::connect(ConnectionId conn_id, const VerbsRemotePeerInfo& remote_peer_info) {
+  std::lock_guard<std::mutex> lock(connections_mutex_);
+  auto it = connections_.find(conn_id);
+  if (it == connections_.end()) {
+    return false;
+  }
+  if (it->second.connected) {
+    return false;
+  }
+
+  try {
+    auto& conn_info = it->second;
+    if (conn_info.qps.empty()) {
+      return false;
+    }
+
+    for (auto& qp_pair : conn_info.qps) {
+      QPId qp_id = qp_pair.first;
+      
+      if (!modifyQPToInit(conn_id, qp_id)) {
+        return false;
+      }
+      
+      if (!modifyQPToRTR(conn_id, qp_id, 
+                remote_peer_info.qp_num,
+                remote_peer_info.lid,
+                0,
+                conn_info.config.port_num,
+                0,
+                &remote_peer_info.gid)) {
+        return false;
+      }
+
+      if (!modifyQPToRTS(conn_id, qp_id)) {
+        return false;
+      }
+    }
+    conn_info.connected = true;
+    return true;
+  } catch (const std::exception& e) {
+    return false;
+  }
+}
+
+bool VerbsManager::disconnect(ConnectionId conn_id) {
+  std::lock_guard<std::mutex> lock(connections_mutex_);
+  auto it = connections_.find(conn_id);
+  if (it == connections_.end()) {
+    return false;
+  }
+  if (!it->second.connected) {
+    return false;
+  }
+  
+  it->second.connected = false;
+  return true;
+}
+
+VerbsManager::QPId VerbsManager::createQP(ConnectionId conn_id, const QPConfig& config) {
+  std::lock_guard<std::mutex> lock(connections_mutex_);
+  auto it = connections_.find(conn_id);
+  if (it == connections_.end()) {
+    return 0;
+  }
+  if (it->second.qps.size() >= (size_t)it->second.config.max_qp_per_connection) {
+    return 0;
+  }
+  
+  try {
+    ibv_qp_init_attr init_attr{};
+    init_attr.qp_type = config.qp_type;
+    init_attr.sq_sig_all = 0;
+    init_attr.send_cq = it->second.cq->get();
+    init_attr.recv_cq = it->second.cq->get();
+    init_attr.cap.max_send_wr = config.max_send_wr;
+    init_attr.cap.max_recv_wr = config.max_recv_wr;
+    init_attr.cap.max_send_sge = config.max_send_sge;
+    init_attr.cap.max_recv_sge = config.max_recv_sge;
+    init_attr.cap.max_inline_data = config.max_inline_data;
+    
+    QPId qp_id = generateQPId();
+    auto qp = std::make_shared<VerbsQueuePair>(*pd_, init_attr);
+    it->second.qps[qp_id] = qp;
+    
+    return qp_id;
+  } catch (const std::exception& e) {
+    return 0;
+  }
+}
+
+bool VerbsManager::modifyQPToInit(ConnectionId conn_id, QPId qp_id) {
+  auto qp = getQP(conn_id, qp_id);
+  if (!qp) {
+    return false;
+  }
+  
+  ibv_qp_attr attr{};
+  attr.qp_state = IBV_QPS_INIT;
+  attr.pkey_index = 0;
+  auto conn_it = connections_.find(conn_id);
+  if (conn_it == connections_.end()) {
+    return false;
+  }
+  attr.port_num = conn_it->second.config.port_num;
+  attr.qp_access_flags = IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE | 
+                         IBV_ACCESS_REMOTE_READ | IBV_ACCESS_REMOTE_ATOMIC;
+  
+  try {
+    qp->modify(attr, IBV_QP_STATE | IBV_QP_PKEY_INDEX | IBV_QP_PORT | IBV_QP_ACCESS_FLAGS);
+    return true;
+  } catch (const std::exception& e) {
+    return false;
+  }
+}
+
+bool VerbsManager::modifyQPToRTR(ConnectionId conn_id, QPId qp_id, 
+            uint32_t remote_qpn, uint16_t dlid, uint8_t sl, 
+            uint8_t port_num, uint16_t pkey_index, 
+            const ibv_gid* sgid) {
+  auto qp = getQP(conn_id, qp_id);
+  if (!qp) {
+    return false;
+  }
+  
+  auto conn_it = connections_.find(conn_id);
+  if (conn_it == connections_.end()) {
+    return false;
+  }
+  
+  ibv_qp_attr attr{};
+  attr.qp_state = IBV_QPS_RTR;
+  attr.path_mtu = IBV_MTU_4096;
+  attr.dest_qp_num = remote_qpn;
+  attr.rq_psn = 0;
+  attr.max_dest_rd_atomic = 1;
+  attr.min_rnr_timer = 12;
+  attr.ah_attr.dlid = dlid;
+  attr.ah_attr.sl = sl;
+  attr.ah_attr.src_path_bits = 0;
+  attr.ah_attr.port_num = port_num;
+  attr.ah_attr.is_global = (sgid != nullptr && sgid->global.interface_id != 0) ? 1 : 0;
+  
+  if (attr.ah_attr.is_global) {
+    memcpy(&attr.ah_attr.grh.dgid, sgid, sizeof(ibv_gid));
+    attr.ah_attr.grh.flow_label = 0;
+    attr.ah_attr.grh.hop_limit = 1;
+    attr.ah_attr.grh.sgid_index = conn_it->second.config.gid_index;
+  }
+  
+  try {
+    qp->modify(attr, IBV_QP_STATE | IBV_QP_AV | IBV_QP_PATH_MTU | 
+                      IBV_QP_DEST_QPN | IBV_QP_RQ_PSN | IBV_QP_MAX_DEST_RD_ATOMIC | 
+                      IBV_QP_MIN_RNR_TIMER);
+    return true;
+  } catch (const std::exception& e) {
+    return false;
+  }
+}
+
+bool VerbsManager::modifyQPToRTS(ConnectionId conn_id, QPId qp_id) {
+  auto qp = getQP(conn_id, qp_id);
+  if (!qp) {
+    return false;
+  }
+  
+  ibv_qp_attr attr{};
+
+  attr.qp_state = IBV_QPS_RTS;
+  attr.timeout = 15;
+  attr.retry_cnt = 5;
+  attr.rnr_retry = 5;
+  attr.sq_psn = 0;
+  attr.max_rd_atomic = 1;
+  
+  try {
+    qp->modify(attr, IBV_QP_STATE | IBV_QP_TIMEOUT | IBV_QP_RETRY_CNT | 
+                      IBV_QP_RNR_RETRY | IBV_QP_SQ_PSN | IBV_QP_MAX_QP_RD_ATOMIC);
+    return true;
+  } catch (const std::exception& e) {
+    return false;
+  }
+}
+
+bool VerbsManager::postSend(ConnectionId conn_id, QPId qp_id, ibv_send_wr* wr, ibv_send_wr** bad_wr) {
+  auto qp = getQP(conn_id, qp_id);
+  if (!qp) {
+    return false;
+  }
+  int status = qp->postSend(wr, bad_wr);
+  if (status) return false;
+  return true;
+}
+
+bool VerbsManager::postRecv(ConnectionId conn_id, QPId qp_id, ibv_recv_wr* wr, ibv_recv_wr** bad_wr) {
+  auto qp = getQP(conn_id, qp_id);
+  if (!qp) {
+    return false;
+  }
+  int status = qp->postRecv(wr, bad_wr);
+  if (status) return false;
+  return true;
+}
+
+int VerbsManager::pollCQ(ConnectionId conn_id, int num_entries, ibv_wc* wc) {
+  auto cq = getCQ(conn_id);
+  if (!cq) {
+    return -1;
+  }
+  int num_completions = cq->poll(num_entries, wc);
+  return num_completions;
+}
+
+std::shared_ptr<VerbsQueuePair> VerbsManager::getQP(ConnectionId conn_id, QPId qp_id) {
+  std::lock_guard<std::mutex> lock(connections_mutex_);
+  auto conn_it = connections_.find(conn_id);
+  if (conn_it == connections_.end()) return nullptr;
+  
+  auto qp_it = conn_it->second.qps.find(qp_id);
+  if (qp_it == conn_it->second.qps.end()) return nullptr;
+  
+  return qp_it->second;
+}
+
+std::shared_ptr<VerbsCompletionQueue> VerbsManager::getCQ(ConnectionId conn_id) {
+  std::lock_guard<std::mutex> lock(connections_mutex_);
+  auto it = connections_.find(conn_id);
+  if (it == connections_.end()) return nullptr;
+  return it->second.cq;
+}
+
+std::shared_ptr<VerbsProtectionDomain> VerbsManager::getPD() {
+  return pd_;
+}
+
+bool VerbsManager::isConnected(ConnectionId conn_id) const {
+  std::lock_guard<std::mutex> lock(connections_mutex_);
+  auto it = connections_.find(conn_id);
+  if (it == connections_.end()) return false;
+  return it->second.connected;
+}
+
+size_t VerbsManager::getConnectionCount() const {
+  std::lock_guard<std::mutex> lock(connections_mutex_);
+  return connections_.size();
+}
+
+size_t VerbsManager::getQPCount(ConnectionId conn_id) const {
+  std::lock_guard<std::mutex> lock(connections_mutex_);
+  auto it = connections_.find(conn_id);
+  if (it == connections_.end()) return 0;
+  return it->second.qps.size();
+}
+
+VerbsRemotePeerInfo VerbsManager::getLocalMetadata(ConnectionId conn_id, QPId qp_id) {
+  std::lock_guard<std::mutex> lock(connections_mutex_);
+  auto conn_it = connections_.find(conn_id);
+  if (conn_it == connections_.end()) {
+    return VerbsRemotePeerInfo{};
+  }
+
+  auto qp_it = conn_it->second.qps.find(qp_id);
+  if (qp_it == conn_it->second.qps.end()) {
+    return VerbsRemotePeerInfo{};
+  }
+  
+  VerbsRemotePeerInfo metadata;
+  metadata.qp_num = qp_it->second->getQpNum();
+  
+  try {
+    ibv_port_attr port_attr = context_->queryPort(conn_it->second.config.port_num);
+    metadata.lid = port_attr.lid;
+    
+    auto& lib = VerbsLib::getInstance();
+    if (lib.queryGid(context_->get(), conn_it->second.config.port_num, 
+                     conn_it->second.config.gid_index, &metadata.gid) != 0) {
+      std::memset(&metadata.gid, 0, sizeof(ibv_gid));
+    }
+  } catch (const std::exception& e) {
+    std::memset(&metadata.gid, 0, sizeof(ibv_gid));
+  }
+  
+  return metadata;
+}
+
+VerbsManager::ConnectionId VerbsManager::generateConnectionId() { 
+  return next_connection_id_.fetch_add(1, std::memory_order_relaxed); 
+}
+
+VerbsManager::QPId VerbsManager::generateQPId() { 
+  return next_qp_id_.fetch_add(1, std::memory_order_relaxed); 
+}
+
+} // namespace pccl::communicator
