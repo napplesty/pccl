@@ -75,15 +75,10 @@ cuda_flags = ['-std=c++20',
              ]
 
 data_include_dirs = [
-    f'{current_dir}/include/plugins',
     f'{current_dir}/thirdparty/cutlass/include/cute',
     f'{current_dir}/thirdparty/cutlass/include/cutlass',
     f'{current_dir}/thirdparty/composable_kernel/include/ck',
     f'{current_dir}/thirdparty/composable_kernel/include/ck_tile',
-]
-
-data_libs_dir = [
-
 ]
 
 class CustomBuildPy(build_py):
@@ -130,7 +125,7 @@ if __name__ == '__main__':
             ]
         },
         ext_modules=[
-            CppExtension(name='cccl',
+            CppExtension(name='pccl.cccl',
                          sources=sources,
                          include_dirs=build_include_dirs,
                          libraries=build_libraries,

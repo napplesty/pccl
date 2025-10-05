@@ -7,7 +7,8 @@ __author__ = "Shuyao Qi"
 
 from .collective_ir import *
 from .cccl import (
-    PCCLRuntime, OperatorFactory, 
-    PrimitiveType, DataType, ReduceOperation, BufferType,
-    BufferConfig, PrimitiveConfig, GPUComputeGraph
+    PrimitiveType, DataType, ComputeType, ExecutorType,
+    BufferConfig, ExecutorConfig, PrimitiveConfig, RuntimeConfig,
+    PrimitiveGrpah, initializeRuntime, shutdownRuntime, executeGraph, get_global_config
 )
+
