@@ -46,7 +46,7 @@ struct DistributedMemoryConfig {
   int local_rank;
   int world_size;
   std::map<ExecutorType, int> buffers_per_executor;
-  std::map<ExecutorType, size_t> default_buffer_sizes;
+  std::map<ExecutorType, unsigned long long> default_buffer_sizes;
   std::map<std::string, std::string> extra_config;
 };
 
