@@ -35,22 +35,22 @@ class CollectiveExecutionPipeline:
     def _create_pass_manager(self) -> PassManager:
         manager = PassManager()
         
-        if self.config.optimization_level >= OptimizationLevel.BASIC:
+        if self.config.optimization_level.value >= OptimizationLevel.BASIC.value:
             from ..collective_ir.passes.static.canonical import CanonicalPass
             manager.add_pass(CanonicalPass())
         
-        if self.config.optimization_level >= OptimizationLevel.STANDARD:
+        if self.config.optimization_level.value >= OptimizationLevel.STANDARD.value:
             from ..collective_ir.passes.static.memory import MemoryOptimizationPass
             from ..collective_ir.passes.static.algorithms.collective import CollectiveOptimizationPass
             manager.add_pass(MemoryOptimizationPass())
             manager.add_pass(CollectiveOptimizationPass())
         
-        if self.config.optimization_level >= OptimizationLevel.ADVANCED:
+        if self.config.optimization_level.value >= OptimizationLevel.ADVANCED.value:
             from ..collective_ir.passes.performance_modeling import PerformanceModelingPass
             manager.add_pass(PerformanceModelingPass())
             manager.add_pass(ComprehensiveOptimizationPass(optimization_level=2))
         
-        if self.config.optimization_level >= OptimizationLevel.AGGRESSIVE:
+        if self.config.optimization_level.value >= OptimizationLevel.AGGRESSIVE.value:
             from ..collective_ir.passes.solver_based.hybrid_solver import HybridSolverPass
             manager.add_pass(HybridSolverPass())
         

@@ -1,7 +1,7 @@
-from enum import Enum
+from enum import Enum, IntEnum
 from typing import Dict, Any
 
-class OptimizationLevel(Enum):
+class OptimizationLevel(IntEnum):
     BASIC = 0
     STANDARD = 1
     ADVANCED = 2
