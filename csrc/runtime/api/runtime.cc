@@ -405,7 +405,7 @@ void shutdownRuntime() {
   PCCL_LOG_INFO("Runtime shutdown completed");
 }
 
-bool executeGraph(const PrimitiveGrpah& graph, 
+bool executeGraph(PrimitiveGrpah& graph, 
                  std::vector<int>& participants, 
                  torch::Tensor& input, torch::Tensor& output) {
   return false;

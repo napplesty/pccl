@@ -139,7 +139,7 @@ bool RoCEAdapter::flush() {
         }
         return true;
       } else {
-        PCCL_LOG_ERROR("RoCE completion error: {}", ibv_wc_status_str(wc.status));
+        PCCL_LOG_ERROR("RoCE completion error");
         return false;
       }
     }

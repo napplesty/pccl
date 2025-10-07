@@ -39,12 +39,12 @@ class RuntimeTester:
                 "rank": i,
                 "world_size": self.world_size,
                 "buffer_nums": {
-                    "0": 2,  # CPU buffers
-                    "1": 2   # CUDA buffers
+                    cccl.ExecutorType.CPU: 2,   # CPU buffers
+                    cccl.ExecutorType.CUDA: 2   # CUDA buffers
                 },
                 "buffer_sizes": {
-                    "0": 1024 * 1024,  # 1MB for CPU
-                    "1": 1024 * 1024   # 1MB for CUDA
+                    cccl.ExecutorType.CPU: 1024 * 1024,   # 1MB for CPU
+                    cccl.ExecutorType.CUDA: 1024 * 1024   # 1MB for CUDA
                 },
                 "endpoint_configs": {
                     "pccl.runtime.use_tcp": "true",
@@ -236,6 +236,15 @@ def run_test(rank: int, world_size: int):
 
 def main():
     """主函数"""
+    # 检查是否在torchrun环境中
+    if "RANK" in os.environ and "WORLD_SIZE" in os.environ:
+        # torchrun模式 - 直接运行测试
+        rank = int(os.environ["RANK"])
+        world_size = int(os.environ["WORLD_SIZE"])
+        print(f"检测到torchrun环境: rank={rank}, world_size={world_size}")
+        return run_test(rank, world_size)
+    
+    # 非torchrun模式
     world_size = 8
     
     print("=" * 50)

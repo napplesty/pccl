@@ -24,3 +24,10 @@ class ExecutorType(Enum):
     CPU = auto()
     CUDA = auto()
     LAST = auto()
+
+@dataclass
+class TensorInfo:
+    shape: Tuple[int, ...]
+    dtype: DataType
+    device_type: ExecutorType
+    device_id: int = 0
