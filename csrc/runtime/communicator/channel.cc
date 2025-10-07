@@ -1,22 +1,10 @@
 #include "runtime/communicator/channel.h"
-#include "plugins/aroce/roce_adapter.h"
 #include "plugins/atcp/tcp_adapter.h"
+#include "plugins/aroce/roce_adapter.h"
 #include "utils/logging.h"
 #include <algorithm>
-#include <cmath>
-#include <string>
 
 namespace pccl::communicator {
-
-static constexpr std::string RDMA_CHANNEL_KEY = "RDMA";
-static constexpr std::string RDMA_QP_NUM = "RDMA_QP_NUM";
-static constexpr std::string RDMA_GID = "RDMA_GID";
-static constexpr std::string RDMA_CHANNEL_KEY = "RDMA";
-static constexpr std::string RDMA_CHANNEL_KEY = "RDMA";
-
-static std::vector<ChannelType> get_shared_channel_type(Endpoint node0, Endpoint Node1) {
-
-}
 
 bool Endpoint::operator==(const Endpoint& other) const {
   return attributes_ == other.attributes_;
@@ -28,68 +16,43 @@ bool Endpoint::operator<(const Endpoint& other) const {
 
 std::size_t Endpoint::hash() const {
   std::size_t seed = 0;
-  for (const auto& attr : attributes_) {
-    seed ^= std::hash<std::string>{}(attr.first) + 0x9e3779b9 + (seed << 6) + (seed >> 2);
-    seed ^= std::hash<std::string>{}(attr.second) + 0x9e3779b9 + (seed << 6) + (seed >> 2);
+  for (const auto& pair : attributes_) {
+    seed ^= std::hash<std::string>{}(pair.first) + 0x9e3779b9 + (seed << 6) + (seed >> 2);
+    seed ^= std::hash<std::string>{}(pair.second) + 0x9e3779b9 + (seed << 6) + (seed >> 2);
   }
   return seed;
 }
 
 nlohmann::json Endpoint::toJson() const {
-  return nlohmann::json(attributes_);
-}
-
-Endpoint Endpoint::fromJson(const nlohmann::json& j) {
-  Endpoint ep;
-  if (j.is_object()) {
-    for (auto it = j.begin(); it != j.end(); ++it) {
-      ep.attributes_[it.key()] = it.value();
-    }
-  }
-  return ep;
-}
-
-float NetMetrics::effectiveBandwidth(size_t data_size) const {
-  if (data_size == 0) {
-    return 0;
-  }
-  return (float)data_size / ((float)data_size / bandwidth_ + latency_);
-}
-
-nlohmann::json OobMessage::toJson() const {
   nlohmann::json j;
-  j["type"] = static_cast<int>(type_);
-  j["seq_id"] = seq_id_;
-  j["timestamp"] = timestamp_;
-  j["src_rank"] = src_rank;
-  j["payload"] = payload_;
+  for (const auto& pair : attributes_) {
+    j[pair.first] = pair.second;
+  }
   return j;
 }
 
-OobMessage OobMessage::fromJson(const nlohmann::json& j) {
-  OobMessage msg;
-  msg.type_ = static_cast<OobMsgType>(j.value("type", 0));
-  msg.seq_id_ = j.value("seq_id", 0);
-  msg.timestamp_ = j.value("timestamp", 0);
-  msg.src_rank = j.value("src_rank", -1);
-  
-  auto payload_json = j.find("payload");
-  if (payload_json != j.end() && payload_json->is_array()) {
-    msg.payload_.assign(payload_json->begin(), payload_json->end());
+Endpoint Endpoint::fromJson(const nlohmann::json& json_data) {
+  Endpoint endpoint;
+  for (auto it = json_data.begin(); it != json_data.end(); ++it) {
+    endpoint.attributes_[it.key()] = it.value();
   }
-  
-  return msg;
+  return endpoint;
 }
 
-std::unique_ptr<CommEngine> CommEngine::create(ChannelType type,
-                                               const Endpoint& local_endpoint,
-                                               const Endpoint& remote_endpoint) {
-  return nullptr;
+std::string Endpoint::toString() const {
+  return toJson().dump();
+}
+
+float NetMetrics::effectiveBandwidth(size_t data_size) const {
+  if (latency_ == 0) return bandwidth_;
+  double total_time = latency_ + (data_size / bandwidth_);
+  return data_size / total_time;
 }
 
 CommunicationChannel::CommunicationChannel(const Endpoint& self_endpoint, const Endpoint& peer_endpoint)
   : self_endpoint_(self_endpoint), peer_endpoint_(peer_endpoint),
-    state_(ConnectionState::DISCONNECTED), next_tx_id_(1) {}
+    state_(ConnectionState::DISCONNECTED), next_tx_id_(1) {
+}
 
 CommunicationChannel::~CommunicationChannel() {
   shutdown();
@@ -97,175 +60,168 @@ CommunicationChannel::~CommunicationChannel() {
 
 bool CommunicationChannel::initialize() {
   if (state_ != ConnectionState::DISCONNECTED) {
-    PCCL_LOG_WARN("Channel already initialized");
+    PCCL_LOG_ERROR("Channel already initialized");
     return false;
   }
-  bool connected = false;
   
+  state_ = ConnectionState::CONNECTING;
   
-  state_ = ConnectionState::CONNECTED;
-  PCCL_LOG_INFO("Communication channel initializing");
-  return true;
+  bool any_connected = false;
+  for (auto& [type, engine_info] : engines_) {
+    if (engine_info.enabled_ && engine_info.engine_->connect(self_endpoint_, peer_endpoint_)) {
+      any_connected = true;
+      PCCL_LOG_INFO("{} engine connected successfully", 
+                   type == ChannelType::RDMA ? "RDMA" : "TCP");
+    } else {
+      engine_info.enabled_ = false;
+      PCCL_LOG_WARN("{} engine failed to connect", 
+                   type == ChannelType::RDMA ? "RDMA" : "TCP");
+    }
+  }
+  
+  if (any_connected) {
+    state_ = ConnectionState::CONNECTED;
+    PCCL_LOG_INFO("Communication channel established with peer");
+    return true;
+  } else {
+    state_ = ConnectionState::ERROR;
+    PCCL_LOG_ERROR("All communication engines failed to connect");
+    return false;
+  }
 }
 
 void CommunicationChannel::shutdown() {
-  if (state_ == ConnectionState::DISCONNECTED) return;
-  
-  disconnect();
-  
-  std::lock_guard<std::mutex> lock(engines_mutex_);
-  engines_.clear();
-  
   state_ = ConnectionState::DISCONNECTED;
-  PCCL_LOG_INFO("Communication channel shutdown");
+  
+  for (auto& [type, engine_info] : engines_) {
+    if (engine_info.engine_) {
+      engine_info.engine_->disconnect();
+    }
+  }
+  
+  engines_.clear();
+  transactions_.clear();
+  registered_regions_.clear();
 }
 
-bool CommunicationChannel::prepSend(const MemRegion& dst, const MemRegion& src, uint64_t tx_id) {
+uint64_t CommunicationChannel::prepSend(const MemRegion& dst, const MemRegion& src) {
   if (state_ != ConnectionState::CONNECTED) {
     PCCL_LOG_ERROR("Channel not connected");
-    return false;
+    return 0;
   }
   
-  auto* engine = selectBestEngine(src.size_);
-  if (!engine) {
-    PCCL_LOG_ERROR("No suitable engine found for data size {}", src.size_);
-    return false;
+  ChannelType best_engine = selectBestEngine(src.size_);
+  auto it = engines_.find(best_engine);
+  if (it == engines_.end() || !it->second.enabled_) {
+    PCCL_LOG_ERROR("Best engine not available");
+    return 0;
   }
   
-  if ((int)src.size_ > engine->getStats().max_frag_) {
-    return setupFragmentedSend(dst, src, tx_id);
+  uint64_t tx_id = next_tx_id_.fetch_add(1);
+  uint64_t fragment_id = it->second.engine_->prepSend(dst, src);
+  
+  if (fragment_id == 0) {
+    PCCL_LOG_ERROR("Failed to prepare send operation");
+    return 0;
   }
   
-  std::lock_guard<std::mutex> lock(tx_mutex_);
-  return engine->prepSend(dst, src, tx_id);
+  auto transaction = std::make_shared<Transaction>(tx_id, src.size_);
+  transaction->fragments_.push_back({best_engine, fragment_id});
+  
+  {
+    std::lock_guard lock(tx_mutex_);
+    transactions_[tx_id] = transaction;
+  }
+  
+  return tx_id;
 }
 
-bool CommunicationChannel::postSend(uint64_t tx_id) {
-  if (state_ != ConnectionState::CONNECTED) return false;
-  
-  std::lock_guard<std::mutex> lock(tx_mutex_);
-  
-  auto frag_it = fragmented_tx_.find(tx_id);
-  if (frag_it != fragmented_tx_.end()) {
-    bool success = true;
-    for (const auto& fragment : frag_it->second.fragment_tx_ids_) {
-      auto engine_it = engines_.find(fragment.first);
-      if (engine_it != engines_.end()) {
-        if (!engine_it->second.engine_->postSend(fragment.second)) {
-          success = false;
-        }
-      }
-    }
-    return success;
+bool CommunicationChannel::postSend() {
+  if (state_ != ConnectionState::CONNECTED) {
+    return false;
   }
   
-  for (auto& engine_pair : engines_) {
-    if (engine_pair.second.engine_->postSend(tx_id)) {
-      return true;
+  bool all_success = true;
+  for (auto& [type, engine_info] : engines_) {
+    if (engine_info.enabled_) {
+      engine_info.engine_->postSend();
     }
   }
   
-  return false;
+  return all_success;
 }
 
 void CommunicationChannel::signal(uint64_t tx_mask) {
-  std::lock_guard<std::mutex> lock(engines_mutex_);
-  for (auto& engine_pair : engines_) {
-    engine_pair.second.engine_->signal(tx_mask);
-  }
-}
-
-uint64_t CommunicationChannel::checkSignals() {
-  uint64_t completed_mask = 0;
-  
-  std::lock_guard<std::mutex> lock(engines_mutex_);
-  for (auto& engine_pair : engines_) {
-    completed_mask |= engine_pair.second.engine_->checkSignals();
-  }
-  
-  return completed_mask;
-}
-
-bool CommunicationChannel::waitTx(uint64_t tx_id, uint32_t timeout) {
-  auto frag_it = fragmented_tx_.find(tx_id);
-  if (frag_it != fragmented_tx_.end()) {
-    auto start_time = std::chrono::steady_clock::now();
-    auto timeout_time = start_time + std::chrono::milliseconds(timeout);
-    
-    while (std::chrono::steady_clock::now() < timeout_time) {
-      if (frag_it->second.completed_fragments_ >= frag_it->second.fragment_tx_ids_.size()) {
-        fragmented_tx_.erase(frag_it);
-        return true;
-      }
-      
-      uint64_t completed = checkSignals();
-      for (const auto& fragment : frag_it->second.fragment_tx_ids_) {
-        if (completed & (1ULL << fragment.second)) {
-          frag_it->second.completed_fragments_++;
-          handleFragmentCompletion(tx_id, fragment.first, fragment.second);
-        }
-      }
-      
-      std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  for (auto& [type, engine_info] : engines_) {
+    if (engine_info.enabled_) {
+      engine_info.engine_->signal(tx_mask);
     }
-    
+  }
+}
+
+bool CommunicationChannel::checkSignal(uint64_t tx_mask) {
+  for (auto& [type, engine_info] : engines_) {
+    if (engine_info.enabled_ && engine_info.engine_->checkSignal(tx_mask)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+bool CommunicationChannel::waitTx(uint64_t tx_id) {
+  if (state_ != ConnectionState::CONNECTED) {
     return false;
   }
   
-  std::lock_guard<std::mutex> lock(engines_mutex_);
-  for (auto& engine_pair : engines_) {
-    if (engine_pair.second.engine_->waitTx(tx_id, timeout)) {
-      return true;
+  std::shared_ptr<Transaction> transaction;
+  {
+    std::lock_guard lock(tx_mutex_);
+    auto it = transactions_.find(tx_id);
+    if (it == transactions_.end()) {
+      PCCL_LOG_ERROR("Transaction {} not found", tx_id);
+      return false;
+    }
+    transaction = it->second;
+  }
+  
+  for (const auto& [engine_type, fragment_id] : transaction->fragments_) {
+    auto it = engines_.find(engine_type);
+    if (it != engines_.end() && it->second.enabled_) {
+      if (!it->second.engine_->waitTx(fragment_id)) {
+        PCCL_LOG_ERROR("Fragment wait failed for transaction {}", tx_id);
+        return false;
+      }
     }
   }
   
-  return false;
+  transaction->completed_ = true;
+  return true;
 }
 
-bool CommunicationChannel::flush(uint64_t tx_mask) {
-  auto start_time = std::chrono::steady_clock::now();
-  constexpr uint32_t timeout_ms = 5000;
-  
-  while (std::chrono::steady_clock::now() - start_time < std::chrono::milliseconds(timeout_ms)) {
-    uint64_t completed = checkSignals();
-    if ((completed & tx_mask) == tx_mask) {
-      return true;
-    }
-    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+bool CommunicationChannel::flush() {
+  if (state_ != ConnectionState::CONNECTED) {
+    return false;
   }
   
-  return false;
+  bool all_success = true;
+  for (auto& [type, engine_info] : engines_) {
+    if (engine_info.enabled_) {
+      if (!engine_info.engine_->flush()) {
+        all_success = false;
+      }
+    }
+  }
+  
+  cleanupCompletedTransactions();
+  return all_success;
 }
 
-bool CommunicationChannel::connect(const Endpoint& self, const Endpoint& peer) {
-  if (state_ == ConnectionState::CONNECTED) {
-    disconnect();
-  }
-  
-  self_endpoint_ = self;
-  peer_endpoint_ = peer;
-  
-  std::lock_guard<std::mutex> lock(engines_mutex_);
-  bool any_connected = false;
-  
-  for (auto& engine_pair : engines_) {
-    if (engine_pair.second.engine_->connect(self, peer)) {
-      any_connected = true;
-    }
-  }
-  
-  state_ = any_connected ? ConnectionState::CONNECTED : ConnectionState::ERROR;
-  return any_connected;
+bool CommunicationChannel::connect() {
+  return initialize();
 }
 
 void CommunicationChannel::disconnect() {
-  std::lock_guard<std::mutex> lock(engines_mutex_);
-  
-  for (auto& engine_pair : engines_) {
-    engine_pair.second.engine_->disconnect();
-  }
-  
-  state_ = ConnectionState::DISCONNECTED;
+  shutdown();
 }
 
 bool CommunicationChannel::connected() const {
@@ -273,77 +229,82 @@ bool CommunicationChannel::connected() const {
 }
 
 NetMetrics CommunicationChannel::getStats() const {
-  std::lock_guard<std::mutex> lock(engines_mutex_);
-  
-  NetMetrics best_metrics{};
-  double best_score = -1.0;
-  
-  for (const auto& engine_pair : engines_) {
-    double score = engine_pair.second.current_score_;
-    if (score > best_score) {
-      best_metrics = engine_pair.second.metrics_;
-      best_score = score;
+  NetMetrics overall;
+  for (const auto& [type, engine_info] : engines_) {
+    if (engine_info.enabled_) {
+      auto stats = engine_info.engine_->getStats();
+      overall.bandwidth_ += stats.bandwidth_;
+      overall.latency_ = std::max(overall.latency_, stats.latency_);
+      overall.total_bytes_ += stats.total_bytes_;
+      overall.total_operations_ += stats.total_operations_;
     }
   }
-  
-  return best_metrics;
+  return overall;
 }
 
 void CommunicationChannel::updateStats(const NetMetrics& stats) {
-}
-
-bool CommunicationChannel::supportsMemType(uint32_t mem_type) const {
-  std::lock_guard<std::mutex> lock(engines_mutex_);
-  
-  for (const auto& engine_pair : engines_) {
-    if (engine_pair.second.engine_->supportsMemType(mem_type)) {
-      return true;
+  for (auto& [type, engine_info] : engines_) {
+    if (engine_info.enabled_) {
+      engine_info.engine_->updateStats(stats);
     }
   }
-  
-  return false;
-}
-
-uint32_t CommunicationChannel::maxConcurrentTx() const {
-  std::lock_guard<std::mutex> lock(engines_mutex_);
-  
-  uint32_t max_tx = 0;
-  for (const auto& engine_pair : engines_) {
-    max_tx = std::max(max_tx, engine_pair.second.engine_->maxConcurrentTx());
-  }
-  
-  return max_tx;
 }
 
 bool CommunicationChannel::addEngine(std::unique_ptr<CommEngine> engine) {
-  if (!engine) return false;
+  if (!engine) {
+    return false;
+  }
   
-  std::lock_guard<std::mutex> lock(engines_mutex_);
   ChannelType type = engine->getType();
-  
-  EngineInfo info;
-  info.engine_ = std::move(engine);
-  info.metrics_ = info.engine_->getStats();
-  info.current_score_ = calculateEngineScore(info, 1024);
-  
-  engines_[type] = std::move(info);
-  PCCL_LOG_INFO("Added engine type {} to channel", static_cast<int>(type));
-  
+  std::lock_guard lock(engines_mutex_);
+  engines_[type] = std::move(EngineInfo(std::move(engine)));
   return true;
 }
 
-bool CommunicationChannel::addEngine(ChannelType type) {
+bool CommunicationChannel::removeEngine(ChannelType type) {
+  std::lock_guard lock(engines_mutex_);
+  auto it = engines_.find(type);
+  if (it != engines_.end()) {
+    it->second.engine_->disconnect();
+    engines_.erase(it);
+    return true;
+  }
   return false;
 }
 
-bool CommunicationChannel::removeEngine(ChannelType type) {
-  std::lock_guard<std::mutex> lock(engines_mutex_);
-  return engines_.erase(type) > 0;
+bool CommunicationChannel::registerMemoryRegion(const MemRegion& region) {
+  std::lock_guard lock(regions_mutex_);
+  registered_regions_[region.ptr_] = region;
+  
+  bool all_success = true;
+  for (auto& [type, engine_info] : engines_) {
+    if (engine_info.enabled_) {
+      if (!engine_info.engine_->registerMemoryRegion(region)) {
+        all_success = false;
+      }
+    }
+  }
+  
+  return all_success;
 }
 
-bool CommunicationChannel::hasEngine(ChannelType type) const {
-  std::lock_guard<std::mutex> lock(engines_mutex_);
-  return engines_.find(type) != engines_.end();
+bool CommunicationChannel::deregisterMemoryRegion(const MemRegion& region) {
+  std::lock_guard lock(regions_mutex_);
+  auto it = registered_regions_.find(region.ptr_);
+  if (it != registered_regions_.end()) {
+    registered_regions_.erase(it);
+  }
+  
+  bool all_success = true;
+  for (auto& [type, engine_info] : engines_) {
+    if (engine_info.enabled_) {
+      if (!engine_info.engine_->deregisterMemoryRegion(region)) {
+        all_success = false;
+      }
+    }
+  }
+  
+  return all_success;
 }
 
 const Endpoint& CommunicationChannel::getSelfEndpoint() const {
@@ -354,110 +315,84 @@ const Endpoint& CommunicationChannel::getPeerEndpoint() const {
   return peer_endpoint_;
 }
 
-std::vector<ChannelType> CommunicationChannel::getAvailableEngineTypes() const {
-  std::lock_guard<std::mutex> lock(engines_mutex_);
-  
-  std::vector<ChannelType> types;
-  for (const auto& engine_pair : engines_) {
-    types.push_back(engine_pair.first);
-  }
-  
-  return types;
+ChannelType CommunicationChannel::getBestEngineType() const {
+  return selectBestEngine(4096);
 }
 
-void CommunicationChannel::updateEngineMetrics(ChannelType type, const NetMetrics& metrics) {
-  std::lock_guard<std::mutex> lock(engines_mutex_);
-  
-  auto it = engines_.find(type);
-  if (it != engines_.end()) {
-    it->second.metrics_ = metrics;
-    it->second.current_score_ = calculateEngineScore(it->second, 1024);
-  }
-}
-
-CommEngine* CommunicationChannel::selectBestEngine(size_t data_size) const {
-  std::lock_guard<std::mutex> lock(engines_mutex_);
-  
-  CommEngine* best_engine = nullptr;
-  double best_score = -1.0;
-  
-  for (const auto& engine_pair : engines_) {
-    double score = calculateEngineScore(engine_pair.second, data_size);
-    if (score > best_score) {
-      best_score = score;
-      best_engine = engine_pair.second.engine_.get();
+ChannelType CommunicationChannel::selectBestEngine(size_t data_size) const {
+  if (engines_.count(ChannelType::RDMA) > 0) {
+    auto it = engines_.find(ChannelType::RDMA);
+    if (it != engines_.end() && it->second.enabled_) {
+      return ChannelType::RDMA;
     }
   }
   
-  return best_engine;
+  if (engines_.count(ChannelType::TCP) > 0) {
+    auto it = engines_.find(ChannelType::TCP);
+    if (it != engines_.end() && it->second.enabled_) {
+      return ChannelType::TCP;
+    }
+  }
+  
+  PCCL_LOG_ERROR("No available communication engine");
+  return ChannelType::TCP;
 }
 
-bool CommunicationChannel::setupFragmentedSend(const MemRegion& dst, const MemRegion& src, uint64_t tx_id) {
-  return false;
+void CommunicationChannel::updateEngineMetrics(ChannelType type, size_t data_size, double latency) {
+  auto it = engines_.find(type);
+  if (it != engines_.end()) {
+    it->second.metrics_.total_bytes_ += data_size;
+    it->second.metrics_.total_operations_++;
+    it->second.metrics_.latency_ = (it->second.metrics_.latency_ + latency) / 2;
+    it->second.metrics_.bandwidth_ = it->second.metrics_.total_bytes_ / 
+                                   (it->second.metrics_.total_operations_ * it->second.metrics_.latency_);
+  }
 }
 
-void CommunicationChannel::handleFragmentCompletion(uint64_t parent_tx_id, ChannelType engine_type, uint64_t fragment_tx_id) {
+void CommunicationChannel::handleFragmentCompletion(ChannelType engine_type, uint64_t fragment_id) {
 }
 
-double CommunicationChannel::calculateEngineScore(const EngineInfo& engine, size_t data_size) const {
-  return engine.metrics_.scoreForDataSize(data_size);
+void CommunicationChannel::cleanupCompletedTransactions() {
+  std::lock_guard lock(tx_mutex_);
+  for (auto it = transactions_.begin(); it != transactions_.end();) {
+    if (it->second->completed_) {
+      it = transactions_.erase(it);
+    } else {
+      ++it;
+    }
+  }
 }
 
-ChannelManager::ChannelManager(std::unique_ptr<OobChannel> oob_channel)
-  : oob_channel_(std::move(oob_channel)) {}
+ChannelManager::ChannelManager() {
+}
 
 ChannelManager::~ChannelManager() {
   shutdown();
 }
 
 bool ChannelManager::initialize(const Endpoint& self_endpoint) {
-  if (!oob_channel_) return false;
-  
   self_endpoint_ = self_endpoint;
-  
-  if (!oob_channel_->init(self_endpoint)) {
-    return false;
-  }
-  
-  oob_channel_->registerHandler(OobMsgType::NODE_JOIN,
-                               [this](const OobMessage& msg) {
-                                 handleOobMessage(msg);
-                               });
-  
-  oob_channel_->registerHandler(OobMsgType::NODE_LEAVE,
-                               [this](const OobMessage& msg) {
-                                 handleOobMessage(msg);
-                               });
-  
-  oob_channel_->registerHandler(OobMsgType::TOPOLOGY_UPDATE,
-                               [this](const OobMessage& msg) {
-                                 handleOobMessage(msg);
-                               });
-  
-  PCCL_LOG_INFO("Channel manager initialized");
   return true;
 }
 
 void ChannelManager::shutdown() {
-  if (oob_channel_) {
-    oob_channel_->shutdown();
+  std::lock_guard lock(channels_mutex_);
+  for (auto& [endpoint, channel] : channels_) {
+    channel->shutdown();
   }
-  
-  std::lock_guard<std::mutex> lock(channels_mutex_);
   channels_.clear();
-  
-  std::lock_guard<std::mutex> node_lock(node_map_mutex_);
-  node_map_.clear();
+  engine_factories_.clear();
 }
 
-bool ChannelManager::registerEngineFactory(ChannelType type,
-                         std::function<std::unique_ptr<CommEngine>(const Endpoint&, const Endpoint&)> factory) {
+bool ChannelManager::registerEngineFactory(ChannelType type, 
+  std::function<std::unique_ptr<CommEngine>(const Endpoint&, const Endpoint&)> factory) {
+  
   engine_factories_[type] = factory;
   return true;
 }
 
 std::shared_ptr<CommunicationChannel> ChannelManager::getOrCreateChannel(const Endpoint& peer_endpoint) {
-  std::lock_guard<std::mutex> lock(channels_mutex_);
+  std::lock_guard lock(channels_mutex_);
   
   auto it = channels_.find(peer_endpoint);
   if (it != channels_.end()) {
@@ -465,122 +400,76 @@ std::shared_ptr<CommunicationChannel> ChannelManager::getOrCreateChannel(const E
   }
   
   auto channel = std::make_shared<CommunicationChannel>(self_endpoint_, peer_endpoint);
+  
+  for (const auto& [type, factory] : engine_factories_) {
+    auto engine = factory(self_endpoint_, peer_endpoint);
+    if (engine) {
+      channel->addEngine(std::move(engine));
+    }
+  }
+  
   if (!channel->initialize()) {
+    PCCL_LOG_ERROR("Failed to initialize channel to peer");
     return nullptr;
   }
   
-  establishOptimalEngines(peer_endpoint);
-  
   channels_[peer_endpoint] = channel;
+  PCCL_LOG_INFO("Created new channel to peer");
   return channel;
 }
 
 bool ChannelManager::removeChannel(const Endpoint& peer_endpoint) {
-  std::lock_guard<std::mutex> lock(channels_mutex_);
-  return channels_.erase(peer_endpoint) > 0;
+  std::lock_guard lock(channels_mutex_);
+  auto it = channels_.find(peer_endpoint);
+  if (it != channels_.end()) {
+    it->second->shutdown();
+    channels_.erase(it);
+    return true;
+  }
+  return false;
 }
 
 std::shared_ptr<CommunicationChannel> ChannelManager::getChannel(const Endpoint& peer_endpoint) const {
-  std::lock_guard<std::mutex> lock(channels_mutex_);
+  std::lock_guard lock(channels_mutex_);
   auto it = channels_.find(peer_endpoint);
   return it != channels_.end() ? it->second : nullptr;
 }
 
-bool ChannelManager::addEngineToChannel(const Endpoint& peer_endpoint, ChannelType type) {
-  auto channel = getChannel(peer_endpoint);
-  if (!channel) return false;
-  
-  auto factory_it = engine_factories_.find(type);
-  if (factory_it == engine_factories_.end()) return false;
-  
-  auto engine = factory_it->second(self_endpoint_, peer_endpoint);
-  if (!engine) return false;
-  
-  return channel->addEngine(std::move(engine));
-}
-
-bool ChannelManager::removeEngineFromChannel(const Endpoint& peer_endpoint, ChannelType type) {
-  auto channel = getChannel(peer_endpoint);
-  return channel ? channel->removeEngine(type) : false;
-}
-
-void ChannelManager::updateNodeMapping(const std::string& node_id, const Endpoint& endpoint) {
-  std::lock_guard<std::mutex> lock(node_map_mutex_);
-  
-  NodeInfo info;
-  info.node_id_ = node_id;
-  info.endpoint_ = endpoint;
-  info.last_updated_ = std::chrono::duration_cast<std::chrono::milliseconds>(
-    std::chrono::system_clock::now().time_since_epoch()).count();
-  
-  node_map_[node_id] = info;
-}
-
-void ChannelManager::removeNodeMapping(const std::string& node_id) {
-  std::lock_guard<std::mutex> lock(node_map_mutex_);
-  node_map_.erase(node_id);
-}
-
-Endpoint ChannelManager::resolveNodeId(const std::string& node_id) const {
-  std::lock_guard<std::mutex> lock(node_map_mutex_);
-  auto it = node_map_.find(node_id);
-  return it != node_map_.end() ? it->second.endpoint_ : Endpoint{};
-}
-
-std::vector<Endpoint> ChannelManager::getConnectedPeers() const {
-  if (!oob_channel_) return {};
-  return oob_channel_->getConnectedNodes();
-}
-
-std::set<ChannelType> ChannelManager::getAvailableChannelTypes(const Endpoint& peer_endpoint) const {
-  std::set<ChannelType> types;
-  
-  for (const auto& factory_pair : engine_factories_) {
-    types.insert(factory_pair.first);
+std::vector<Endpoint> ChannelManager::getConnectedEndpoints() const {
+  std::lock_guard lock(channels_mutex_);
+  std::vector<Endpoint> endpoints;
+  for (const auto& pair : channels_) {
+    endpoints.push_back(pair.first);
   }
-  
-  return types;
+  return endpoints;
 }
 
-void ChannelManager::handleOobMessage(const OobMessage& msg) {
-  switch (msg.type_) {
-    case OobMsgType::NODE_JOIN: {
-      break;
-    }
-    case OobMsgType::NODE_LEAVE: {
-      break;
-    }
-    case OobMsgType::TOPOLOGY_UPDATE: {
-      break;
-    }
-    default:
-      break;
-  }
+bool ChannelManager::isEndpointConnected(const Endpoint& endpoint) const {
+  std::lock_guard lock(channels_mutex_);
+  return channels_.find(endpoint) != channels_.end();
 }
 
-void ChannelManager::establishOptimalEngines(const Endpoint& peer_endpoint) {
-  auto available_types = getAvailableChannelTypes(peer_endpoint);
-  
-  for (ChannelType type : available_types) {
-    addEngineToChannel(peer_endpoint, type);
-  }
-}
-
-void ChannelManager::reconnectNode(const std::string& node_id, const Endpoint& new_endpoint) {
-  auto old_endpoint = resolveNodeId(node_id);
-  if (old_endpoint == new_endpoint) return;
-  
-  updateNodeMapping(node_id, new_endpoint);
-  
-  std::lock_guard<std::mutex> lock(channels_mutex_);
-  auto it = channels_.find(old_endpoint);
-  if (it != channels_.end()) {
-    auto channel = it->second;
-    channels_.erase(it);
-    channels_[new_endpoint] = channel;
+void ChannelManager::updateClusterConfigs(const std::map<int, nlohmann::json>& cluster_configs) {
+  for (const auto& [rank, config] : cluster_configs) {
+    Endpoint peer_endpoint = Endpoint::fromJson(config);
     
-    channel->connect(self_endpoint_, new_endpoint);
+    if (peer_endpoint == self_endpoint_) {
+      continue;
+    }
+    
+    if (!isEndpointConnected(peer_endpoint)) {
+      establishChannel(peer_endpoint);
+    }
   }
+}
+
+void ChannelManager::establishChannel(const Endpoint& peer_endpoint) {
+  getOrCreateChannel(peer_endpoint);
+}
+
+void ChannelManager::reconnectChannel(const Endpoint& peer_endpoint) {
+  removeChannel(peer_endpoint);
+  establishChannel(peer_endpoint);
 }
 
 } // namespace pccl::communicator

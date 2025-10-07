@@ -23,14 +23,6 @@ struct PrimitiveConfig {
   int signal_value;
 };
 
-enum class ReadyQueueType {
-  CPU_CUDA,
-  CUDA_CPU,
-  CPU_CPU,
-  CUDA_CUDA,
-  LAST
-};
-
 struct OperatorLayout {
   int uid;
   int required_executors;
@@ -62,9 +54,10 @@ class GraphExecutor {
 public:
   GraphExecutor();
   ~GraphExecutor();
-  bool initialize(GraphBufferLayout* graph_layout, const std::map<ExecutorType, int>& executor_config);
-  void start();
-  void stop();
+  bool initialize(GraphBufferLayout* graph_layout, 
+                  const std::map<ExecutorType, int> &executor_config,
+                  std::map<std::string, std::string> &extra_params);
+  void issue();
   void wait();
   void initialize_ready_queues();
 private:

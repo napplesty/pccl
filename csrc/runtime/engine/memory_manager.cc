@@ -1,197 +1,263 @@
 #include "runtime/engine/memory_manager.h"
-#include "utils/allocator.hpp"
+#include "utils/allocator.h"
+#include "utils/exception.hpp"
 #include "utils/logging.h"
+#include <cstdint>
+#include <random>
+#include <algorithm>
 
 namespace pccl::engine {
 
-MemoryManager::MemoryManager() : initialized_(false) {
-  std::memset(next_buffer_num_, 0, sizeof(next_buffer_num_));
+nlohmann::json GlobalBufferID::toJson() const {
+  nlohmann::json j;
+  j["addr"] = reinterpret_cast<uint64_t>(addr);
+  j["value"] = value;
+  j["shareable_handles"] = shareable_handles;
+  return j;
+}
+
+GlobalBufferID GlobalBufferID::fromJson(const nlohmann::json& json_data) {
+  GlobalBufferID gbid;
+  PCCL_HOST_ASSERT(json_data.contains("value") && json_data.contains("addr") && 
+                   json_data.contains("shareable_handles"), "Invalid buffer JSON");
+  
+  uint64_t addr_value = json_data["addr"];
+  gbid.addr = reinterpret_cast<void*>(addr_value);
+  gbid.value = json_data["value"];
+  gbid.shareable_handles = json_data["shareable_handles"].get<std::map<std::string, std::string>>();
+  return gbid;
+}
+
+std::string GlobalBufferID::toString() const {
+  return toJson().dump();
+}
+
+MemoryManager::MemoryManager() : self_rank_(-1), initialized_(false) {
 }
 
 MemoryManager::~MemoryManager() {
   shutdown();
 }
 
-bool MemoryManager::initialize(const DistributedMemoryConfig& config,
-                 std::shared_ptr<MemoryManagerCommInterface> comm,
-                 void* semaphore_buffer) {
+bool MemoryManager::initialize(runtime::RuntimeConfig& runtime_config) {
   if (initialized_) {
     PCCL_LOG_WARN("MemoryManager already initialized");
+    return true;
+  }
+  
+  try {
+    self_rank_ = runtime_config.rank;
+    host_sign_ = runtime_config.endpoint_configs.at("pccl.runtime.host_sign");
+    global_buffers_[self_rank_] = {};
+    
+    for (auto& executor_type : runtime_config.buffer_nums) {
+      auto buffer_size = runtime_config.buffer_sizes.at(executor_type.first);
+      
+      for (int i = 0; i < executor_type.second; i++) {
+        GlobalBufferID gid;
+        void* ptr = utils::allocate(executor_type.first, buffer_size);
+        
+        gid.addr = ptr;
+        gid.setBufferSize(buffer_size);
+        gid.setBufferIdx(i);
+        gid.setExecutorType(executor_type.first);
+        gid.setRank(self_rank_);
+        
+        if (executor_type.first == runtime::ExecutorType::CUDA) {
+          gid.shareable_handles["cuda_ipc_handle"] = 
+            utils::get_shareable_handle(executor_type.first, ptr);
+        } else if (executor_type.first == runtime::ExecutorType::CPU) {
+          gid.shareable_handles["shmem_key"] = generateShmemKey(ptr);
+        }
+        
+        global_buffers_[self_rank_].push_back(gid);
+        
+        PCCL_LOG_DEBUG("Allocated buffer: rank={}, type={}, idx={}, size={}, addr={}", 
+                      self_rank_, static_cast<int>(executor_type.first), i, 
+                      buffer_size, reinterpret_cast<uint64_t>(ptr));
+      }
+    }
+    
+    signal_buffer.addr = utils::allocate(runtime::ExecutorType::CPU, 4096 * sizeof(uint64_t));
+    signal_buffer.setExecutorType(runtime::ExecutorType::CPU);
+    signal_buffer.setBufferIdx(0);
+    signal_buffer.setBufferSize(4096 * sizeof(uint64_t));
+    signal_buffer.setRank(self_rank_);
+    signal_buffer.shareable_handles["signal_buffer"] = "true";
+    
+    remote_signal_buffer_cache.addr = utils::allocate(runtime::ExecutorType::CPU, 4096 * sizeof(uint64_t));
+    remote_signal_buffer_cache.setExecutorType(runtime::ExecutorType::CPU);
+    remote_signal_buffer_cache.setBufferIdx(1);
+    remote_signal_buffer_cache.setBufferSize(4096 * sizeof(uint64_t));
+    remote_signal_buffer_cache.setRank(self_rank_);
+    
+    global_buffers_[self_rank_].push_back(signal_buffer);
+    global_buffers_[self_rank_].push_back(remote_signal_buffer_cache);
+    
+    initialized_ = true;
+    PCCL_LOG_INFO("MemoryManager initialized for rank {}", self_rank_);
+    return true;
+    
+  } catch (const std::exception& e) {
+    PCCL_LOG_ERROR("MemoryManager initialization failed: {}", e.what());
+    return false;
+  }
+}
+
+bool MemoryManager::initialize_cluster(const std::map<int, runtime::RuntimeConfig>& cluster_configs) {
+  if (!initialized_) {
+    PCCL_LOG_ERROR("MemoryManager not initialized");
     return false;
   }
   
-  config_ = config;
-  comm_interface_ = comm;
-  semaphore_buffer_ = semaphore_buffer;
-  
-  if (!allocate_local_buffers(config)) {
-    PCCL_LOG_ERROR("Failed to allocate local buffers");
+  try {
+    for (const auto& [rank, config] : cluster_configs) {
+      if (rank == self_rank_) continue;
+      
+      PCCL_LOG_DEBUG("Processing remote rank {} configuration", rank);
+      
+      for (const auto& [key, value] : config.endpoint_configs) {
+        if (key.find("pccl.buffer.") == 0) {
+          try {
+            nlohmann::json buffer_json = nlohmann::json::parse(value);
+            GlobalBufferID remote_buffer = GlobalBufferID::fromJson(buffer_json);
+            
+            if (registerRemoteBuffer(remote_buffer)) {
+              PCCL_LOG_DEBUG("Registered remote buffer: rank={}, type={}, idx={}", 
+                            rank, static_cast<int>(remote_buffer.getExecutorType()), 
+                            remote_buffer.getBufferIdx());
+            }
+          } catch (const std::exception& e) {
+            PCCL_LOG_WARN("Failed to parse buffer config for key {}: {}", key, e.what());
+          }
+        }
+      }
+    }
+    
+    setupSignalSynchronization();
+    
+    PCCL_LOG_INFO("MemoryManager cluster initialization completed");
+    return true;
+    
+  } catch (const std::exception& e) {
+    PCCL_LOG_ERROR("MemoryManager cluster initialization failed: {}", e.what());
     return false;
   }
+}
+
+bool MemoryManager::update_peer(const runtime::RuntimeConfig& peer_config) {
+  std::lock_guard<std::mutex> lock(remote_mutex_);
   
-  if (!setup_signal_buffer()) {
-    PCCL_LOG_ERROR("Failed to setup signal buffer");
-    return false;
+  int peer_rank = peer_config.rank;
+  PCCL_LOG_DEBUG("Updating peer configuration for rank {}", peer_rank);
+  
+  for (const auto& [key, value] : peer_config.endpoint_configs) {
+    if (key.find("pccl.buffer.") == 0) {
+      try {
+        nlohmann::json buffer_json = nlohmann::json::parse(value);
+        GlobalBufferID remote_buffer = GlobalBufferID::fromJson(buffer_json);
+        
+        bool found = false;
+        for (auto& existing_buffer : remote_buffers_[peer_rank]) {
+          if (existing_buffer.buffer_id.getBufferIdx() == remote_buffer.getBufferIdx() &&
+              existing_buffer.buffer_id.getExecutorType() == remote_buffer.getExecutorType()) {
+            existing_buffer.buffer_id = remote_buffer;
+            found = true;
+            break;
+          }
+        }
+        
+        if (!found) {
+          RemoteBufferInfo info;
+          info.buffer_id = remote_buffer;
+          info.registered_time = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::system_clock::now().time_since_epoch()).count();
+          remote_buffers_[peer_rank].push_back(info);
+        }
+        
+      } catch (const std::exception& e) {
+        PCCL_LOG_WARN("Failed to update buffer config for key {}: {}", key, e.what());
+      }
+    }
   }
   
-  if (comm_interface_ && !perform_buffer_registration()) {
-    PCCL_LOG_ERROR("Failed to perform buffer registration");
-    return false;
-  }
-  
-  initialized_ = true;
-  PCCL_LOG_INFO("MemoryManager initialized successfully");
   return true;
 }
 
 void MemoryManager::shutdown() {
-  if (!initialized_) return;
+  std::lock_guard<std::mutex> lock1(workspace_mutex_);
+  std::lock_guard<std::mutex> lock2(buffer_mutex_);
   
-  std::lock_guard<std::mutex> lock1(allocation_mutex_);
-  std::lock_guard<std::mutex> lock2(workspace_mutex_);
-  
-  for (auto& workspace_pair : active_workspaces_) {
-    deallocate_workspace(workspace_pair.second);
-  }
-  active_workspaces_.clear();
-  
-  for (auto& pool_pair : buffer_pools_) {
-    for (auto& allocation : pool_pair.second) {
-      if (allocation.base_address) {
-        utils::Allocator::free(allocation.base_address, allocation.executor_type);
+  for (auto& [rank, buffers] : global_buffers_) {
+    for (auto& buffer : buffers) {
+      if (buffer.addr) {
+        utils::close_shareable_handle(buffer.getExecutorType(), buffer.addr);
       }
     }
   }
-  buffer_pools_.clear();
   
-  if (signal_buffer_.base_address) {
-    utils::Allocator::free(signal_buffer_.base_address, ExecutorType::CPU);
-  }
-  
+  global_buffers_.clear();
+  active_workspaces_.clear();
+  remote_buffers_.clear();
   initialized_ = false;
+  
   PCCL_LOG_INFO("MemoryManager shutdown completed");
 }
 
-WorkspaceHandle MemoryManager::get_workspace_for_operator(uint64_t operator_id,
-                                            const std::vector<int>& ranks,
-                                            const std::map<ExecutorType, size_t>& buffer_requirements) {
+WorkspaceHandle MemoryManager::get_workspace_for_operator(uint64_t operator_id, 
+                                                       const std::vector<int>& ranks,
+                                                       const std::map<runtime::ExecutorType, size_t>& buffer_requirements) {
   if (!initialized_) {
-    throw std::runtime_error("MemoryManager not initialized");
-  }
-  
-  std::lock_guard<std::mutex> lock(workspace_mutex_);
-  
-  if (active_workspaces_.find(operator_id) != active_workspaces_.end()) {
-    PCCL_LOG_WARN("Workspace for operator {} already exists", operator_id);
-    return active_workspaces_[operator_id];
+    PCCL_THROW(pccl::RuntimeException, "MemoryManager not initialized");
   }
   
   WorkspaceHandle handle;
   handle.operator_id = operator_id;
   handle.participant_ranks = ranks;
-  handle.signal_buffer = signal_buffer_.base_address;
   
-  std::lock_guard<std::mutex> alloc_lock(allocation_mutex_);
+  if (!synchronizeBufferAllocation(operator_id, ranks, buffer_requirements)) {
+    PCCL_THROW(pccl::RuntimeException, "Failed to synchronize buffer allocation");
+  }
   
-  for (const auto& requirement : buffer_requirements) {
-    ExecutorType executor_type = requirement.first;
-    size_t buffer_size = requirement.second;
+  for (int rank : ranks) {
+    std::vector<GlobalBufferID> rank_buffers;
     
-    std::vector<GlobalBufferID> buffer_ids;
-    int num_buffers = config_.buffers_per_executor.at(executor_type);
-    
-    for (int i = 0; i < num_buffers; ++i) {
-      GlobalBufferID buffer_id = allocate_buffer(executor_type, buffer_size, operator_id);
-      if (buffer_id.value == 0) {
-        PCCL_LOG_ERROR("Failed to allocate buffer for executor type {}", static_cast<int>(executor_type));
-        deallocate_workspace(handle);
-        throw std::runtime_error("Buffer allocation failed");
+    for (const auto& [executor_type, size] : buffer_requirements) {
+      GlobalBufferID buffer = allocateBufferForOperator(rank, executor_type, size);
+      if (buffer.addr == nullptr) {
+        PCCL_THROW(pccl::RuntimeException, "Failed to allocate buffer for operator");
       }
-      buffer_ids.push_back(buffer_id);
+      rank_buffers.push_back(buffer);
     }
     
-    handle.allocated_buffers[executor_type] = buffer_ids;
+    handle.buffers[rank] = rank_buffers;
   }
   
-  if (comm_interface_ && !ranks.empty()) {
-    if (!sync_workspace_allocation(operator_id, ranks)) {
-      PCCL_LOG_ERROR("Failed to sync workspace allocation for operator {}", operator_id);
-      deallocate_workspace(handle);
-      throw std::runtime_error("Workspace synchronization failed");
-    }
-    
-    auto remote_infos = exchange_buffer_info(operator_id, ranks);
-    for (const auto& remote_info : remote_infos) {
-      int rank = remote_info.buffer_id.getRank();
-      handle.remote_buffers[rank].push_back(remote_info.buffer_id);
-    }
-    
-    if (!signal_workspace_ready(operator_id, ranks)) {
-      PCCL_LOG_ERROR("Failed to signal workspace ready for operator {}", operator_id);
-      deallocate_workspace(handle);
-      throw std::runtime_error("Workspace signaling failed");
-    }
+  {
+    std::lock_guard<std::mutex> lock(workspace_mutex_);
+    active_workspaces_[operator_id] = handle;
   }
   
-  active_workspaces_[operator_id] = handle;
-  PCCL_LOG_DEBUG("Workspace allocated for operator {} with {} participant ranks",
+  PCCL_LOG_DEBUG("Created workspace for operator {} with {} participants", 
                 operator_id, ranks.size());
   
   return handle;
 }
 
 bool MemoryManager::post_sync_workspace(const WorkspaceHandle& handle) {
-  if (!comm_interface_) {
-    return true;
-  }
-  
-  std::vector<int> other_ranks;
-  for (int rank : handle.participant_ranks) {
-    if (rank != config_.local_rank) {
-      other_ranks.push_back(rank);
-    }
-  }
-  
-  if (other_ranks.empty()) {
-    return true;
-  }
-  
-  uint64_t sync_signal = handle.operator_id;
-  return comm_interface_->broadcast_signal(other_ranks, sync_signal);
+  return synchronizeWorkspace(handle);
 }
 
 void MemoryManager::deallocate_workspace(const WorkspaceHandle& handle) {
-  std::lock_guard<std::mutex> lock(allocation_mutex_);
+  releaseWorkspaceBuffers(handle);
   
-  for (const auto& buffer_pair : handle.allocated_buffers) {
-    for (const GlobalBufferID& buffer_id : buffer_pair.second) {
-      deallocate_buffer(buffer_id);
-    }
-  }
-  
+  std::lock_guard<std::mutex> lock(workspace_mutex_);
   active_workspaces_.erase(handle.operator_id);
-  PCCL_LOG_DEBUG("Workspace deallocated for operator {}", handle.operator_id);
+  
+  PCCL_LOG_DEBUG("Deallocated workspace for operator {}", handle.operator_id);
 }
 
-void* MemoryManager::get_buffer_address(const GlobalBufferID& buffer_id) const {
-  if (!initialized_) return nullptr;
-  
-  ExecutorType executor_type = buffer_id.getExecutorType();
-  uint8_t buffer_num = buffer_id.getBufferNum();
-  
-  auto pool_it = buffer_pools_.find(executor_type);
-  if (pool_it == buffer_pools_.end()) {
-    return nullptr;
-  }
-  
-  if (buffer_num >= pool_it->second.size()) {
-    return nullptr;
-  }
-  
-  return pool_it->second[buffer_num].base_address;
-}
-
-WorkspaceHandle MemoryManager::get_workspace(uint64_t operator_id) const {
+WorkspaceHandle MemoryManager::get_workspace(uint64_t operator_id) {
   std::lock_guard<std::mutex> lock(workspace_mutex_);
   auto it = active_workspaces_.find(operator_id);
   if (it != active_workspaces_.end()) {
@@ -200,217 +266,165 @@ WorkspaceHandle MemoryManager::get_workspace(uint64_t operator_id) const {
   return WorkspaceHandle{};
 }
 
-std::vector<GlobalBufferID> MemoryManager::get_workspace_buffers(uint64_t operator_id) const {
-  std::lock_guard<std::mutex> lock(workspace_mutex_);
-  auto it = active_workspaces_.find(operator_id);
-  if (it == active_workspaces_.end()) {
-    return {};
+std::vector<GlobalBufferID> MemoryManager::getLocalBuffers() const {
+  std::lock_guard<std::mutex> lock(buffer_mutex_);
+  auto it = global_buffers_.find(self_rank_);
+  if (it != global_buffers_.end()) {
+    return it->second;
   }
-  
-  std::vector<GlobalBufferID> all_buffers;
-  for (const auto& buffer_pair : it->second.allocated_buffers) {
-    all_buffers.insert(all_buffers.end(),
-                      buffer_pair.second.begin(),
-                      buffer_pair.second.end());
-  }
-  return all_buffers;
+  return {};
 }
 
-bool MemoryManager::allocate_local_buffers(const DistributedMemoryConfig& config) {
-  for (const auto& executor_config : config.buffers_per_executor) {
-    ExecutorType executor_type = executor_config.first;
-    int num_buffers = executor_config.second;
-    size_t buffer_size = config.default_buffer_sizes.at(executor_type);
-    
-    std::vector<BufferAllocation> allocations;
-    
-    for (int i = 0; i < num_buffers; ++i) {
-      void* base_addr = nullptr;
-      if (!utils::Allocator::alloc(&base_addr, buffer_size, executor_type)) {
-        PCCL_LOG_ERROR("Failed to allocate buffer for executor type {}",
-                      static_cast<int>(executor_type));
-        return false;
+GlobalBufferID MemoryManager::getBuffer(int rank, runtime::ExecutorType executor_type, int buffer_idx) const {
+  std::lock_guard<std::mutex> lock(buffer_mutex_);
+  
+  if (rank == self_rank_) {
+    auto it = global_buffers_.find(rank);
+    if (it != global_buffers_.end()) {
+      for (const auto& buffer : it->second) {
+        if (buffer.getExecutorType() == executor_type && buffer.getBufferIdx() == buffer_idx) {
+          return buffer;
+        }
       }
-      
-      BufferAllocation allocation;
-      allocation.base_address = base_addr;
-      allocation.size = buffer_size;
-      allocation.executor_type = executor_type;
-      allocation.buffer_index = i;
-      allocation.allocated = true;
-      allocation.current_operator = 0;
-      allocation.rkey = 0;
-      
-      allocations.push_back(allocation);
-      PCCL_LOG_DEBUG("Allocated buffer {} for executor type {} at {}",
-                    i, static_cast<int>(executor_type), base_addr);
     }
-    
-    buffer_pools_[executor_type] = allocations;
-    next_buffer_num_[static_cast<int>(executor_type)] = num_buffers;
-  }
-  
-  return true;
-}
-
-bool MemoryManager::setup_signal_buffer() {
-  size_t signal_buffer_size = 1024 * 1024;
-  
-  if (!utils::Allocator::alloc(&signal_buffer_.base_address,
-                              signal_buffer_size, ExecutorType::CPU)) {
-    PCCL_LOG_ERROR("Failed to allocate signal buffer");
-    return false;
-  }
-  
-  signal_buffer_.size = signal_buffer_size;
-  signal_buffer_.rkey = 0;
-  
-  if (comm_interface_) {
-    if (!comm_interface_->register_memory_region(signal_buffer_.base_address,
-                                                signal_buffer_size,
-                                                signal_buffer_.rkey)) {
-      PCCL_LOG_ERROR("Failed to register signal buffer");
-      utils::Allocator::free(signal_buffer_.base_address, ExecutorType::CPU);
-      return false;
-    }
-  }
-  
-  utils::Allocator::memset(signal_buffer_.base_address, 0, signal_buffer_size, ExecutorType::CPU);
-  PCCL_LOG_DEBUG("Signal buffer allocated at {} with size {}",
-                signal_buffer_.base_address, signal_buffer_size);
-  
-  return true;
-}
-
-GlobalBufferID MemoryManager::allocate_buffer(ExecutorType executor_type, size_t size, uint64_t operator_id) {
-  auto pool_it = buffer_pools_.find(executor_type);
-  if (pool_it == buffer_pools_.end()) {
-    return GlobalBufferID{};
-  }
-  
-  for (auto& allocation : pool_it->second) {
-    if (!allocation.allocated && allocation.size >= size) {
-      allocation.allocated = true;
-      allocation.current_operator = operator_id;
-      
-      GlobalBufferID buffer_id(config_.local_rank, executor_type,
-                              allocation.buffer_index, allocation.size);
-      
-      PCCL_LOG_DEBUG("Allocated buffer {} for operator {}",
-                    allocation.buffer_index, operator_id);
-      
-      return buffer_id;
-    }
-  }
-  
-  PCCL_LOG_ERROR("No available buffer for executor type {} with size {}",
-                static_cast<int>(executor_type), size);
-  return GlobalBufferID{};
-}
-
-void MemoryManager::deallocate_buffer(const GlobalBufferID& buffer_id) {
-  ExecutorType executor_type = buffer_id.getExecutorType();
-  uint8_t buffer_num = buffer_id.getBufferNum();
-  
-  auto pool_it = buffer_pools_.find(executor_type);
-  if (pool_it == buffer_pools_.end()) {
-    return;
-  }
-  
-  if (buffer_num >= pool_it->second.size()) {
-    return;
-  }
-  
-  auto& allocation = pool_it->second[buffer_num];
-  allocation.allocated = false;
-  allocation.current_operator = 0;
-  
-  if (allocation.base_address) {
-    utils::Allocator::memset(allocation.base_address, 0, allocation.size, executor_type);
-  }
-  
-  PCCL_LOG_DEBUG("Deallocated buffer {} for executor type {}",
-                buffer_num, static_cast<int>(executor_type));
-}
-
-bool MemoryManager::sync_workspace_allocation(uint64_t operator_id, const std::vector<int>& ranks) {
-  if (!comm_interface_) {
-    return true;
-  }
-  
-  size_t buffer_info_size = sizeof(GlobalBufferID) * 10;
-  std::vector<uint8_t> send_buffer(buffer_info_size, 0);
-  std::vector<uint8_t> recv_buffer(buffer_info_size * ranks.size(), 0);
-  
-  auto local_buffers = get_workspace_buffers(operator_id);
-  if (local_buffers.size() * sizeof(GlobalBufferID) > buffer_info_size) {
-    PCCL_LOG_ERROR("Buffer info size too small");
-    return false;
-  }
-  
-  std::memcpy(send_buffer.data(), local_buffers.data(),
-              local_buffers.size() * sizeof(GlobalBufferID));
-  
-  if (!comm_interface_->allgather(send_buffer.data(), recv_buffer.data(),
-                                 buffer_info_size)) {
-    PCCL_LOG_ERROR("Failed to allgather buffer info");
-    return false;
-  }
-  
-  return true;
-}
-
-std::vector<MemoryManager::RemoteBufferInfo> MemoryManager::exchange_buffer_info(uint64_t operator_id, const std::vector<int>& ranks) {
-  std::vector<RemoteBufferInfo> remote_infos;
-  
-  if (!comm_interface_) {
-    return remote_infos;
-  }
-  
-  for (int rank : ranks) {
-    if (rank == config_.local_rank) continue;
-    
-    auto local_buffers = get_workspace_buffers(operator_id);
-    for (const GlobalBufferID& buffer_id : local_buffers) {
-      RemoteBufferInfo info;
-      info.buffer_id = buffer_id;
-      info.remote_addr = nullptr;
-      info.remote_rkey = 0;
-      
-      remote_infos.push_back(info);
-    }
-  }
-  
-  return remote_infos;
-}
-
-bool MemoryManager::perform_buffer_registration() {
-  if (!comm_interface_) {
-    return true;
-  }
-  
-  for (auto& pool_pair : buffer_pools_) {
-    for (auto& allocation : pool_pair.second) {
-      if (allocation.base_address && allocation.rkey == 0) {
-        if (!comm_interface_->register_memory_region(allocation.base_address,
-                                                    allocation.size,
-                                                    allocation.rkey)) {
-          PCCL_LOG_ERROR("Failed to register memory region for buffer");
-          return false;
+  } else {
+    auto it = remote_buffers_.find(rank);
+    if (it != remote_buffers_.end()) {
+      for (const auto& remote_info : it->second) {
+        if (remote_info.buffer_id.getExecutorType() == executor_type && 
+            remote_info.buffer_id.getBufferIdx() == buffer_idx) {
+          return remote_info.buffer_id;
         }
       }
     }
   }
   
+  return GlobalBufferID{};
+}
+
+void MemoryManager::setCommInterface(std::shared_ptr<MemoryManagerCommInterface> comm_interface) {
+  comm_interface_ = comm_interface;
+}
+
+GlobalBufferID MemoryManager::allocateBufferForOperator(int rank, runtime::ExecutorType executor_type, size_t size) {
+  if (rank == self_rank_) {
+    for (const auto& buffer : global_buffers_[self_rank_]) {
+      if (buffer.getExecutorType() == executor_type && buffer.getBufferSize() >= size) {
+        return buffer;
+      }
+    }
+    
+    GlobalBufferID new_buffer;
+    void* ptr = utils::allocate(executor_type, size);
+    new_buffer.addr = ptr;
+    new_buffer.setBufferSize(size);
+    new_buffer.setBufferIdx(global_buffers_[self_rank_].size());
+    new_buffer.setExecutorType(executor_type);
+    new_buffer.setRank(self_rank_);
+    
+    global_buffers_[self_rank_].push_back(new_buffer);
+    return new_buffer;
+  }
+  
+  return getBuffer(rank, executor_type, 0);
+}
+
+bool MemoryManager::synchronizeBufferAllocation(uint64_t operator_id, 
+                                              const std::vector<int>& ranks,
+                                              const std::map<runtime::ExecutorType, size_t>& requirements) {
+  if (!comm_interface_) {
+    PCCL_LOG_WARN("No communication interface for buffer synchronization");
+    return true;
+  }
+  
+  int master_rank = getMasterRank(ranks);
+  if (master_rank == self_rank_) {
+    std::map<int, std::map<runtime::ExecutorType, std::vector<int>>> allocation;
+    
+    for (int rank : ranks) {
+      std::map<runtime::ExecutorType, std::vector<int>> rank_allocation;
+      int buffer_idx = 0;
+      for (const auto& [exec_type, size] : requirements) {
+        rank_allocation[exec_type].push_back(buffer_idx++);
+      }
+      allocation[rank] = rank_allocation;
+    }
+    
+    WorkspaceHandle sync_handle;
+    sync_handle.operator_id = operator_id;
+    sync_handle.participant_ranks = ranks;
+    sync_handle.metadata["allocation"] = "master_allocation";
+    
+    return comm_interface_->syncWorkspaceAllocation(sync_handle);
+  } else {
+    return comm_interface_->waitForSignal(operator_id);
+  }
+}
+
+bool MemoryManager::registerRemoteBuffer(const GlobalBufferID& remote_buffer) {
+  std::lock_guard<std::mutex> lock(remote_mutex_);
+  
+  int rank = remote_buffer.getRank();
+  RemoteBufferInfo info;
+  info.buffer_id = remote_buffer;
+  info.registered_time = std::chrono::duration_cast<std::chrono::milliseconds>(
+    std::chrono::system_clock::now().time_since_epoch()).count();
+  
+  bool exists = false;
+  for (auto& existing_info : remote_buffers_[rank]) {
+    if (existing_info.buffer_id.getBufferIdx() == remote_buffer.getBufferIdx() &&
+        existing_info.buffer_id.getExecutorType() == remote_buffer.getExecutorType()) {
+      existing_info = info;
+      exists = true;
+      break;
+    }
+  }
+  
+  if (!exists) {
+    remote_buffers_[rank].push_back(info);
+  }
+  
+  if (comm_interface_) {
+    comm_interface_->registerMemoryRegion(remote_buffer);
+  }
+  
   return true;
 }
 
-bool MemoryManager::signal_workspace_ready(uint64_t operator_id, const std::vector<int>& ranks) {
+void MemoryManager::setupSignalSynchronization() {
+  PCCL_LOG_DEBUG("Setting up signal synchronization mechanism");
+}
+
+bool MemoryManager::synchronizeWorkspace(const WorkspaceHandle& handle) {
   if (!comm_interface_) {
     return true;
   }
   
-  return comm_interface_->barrier(ranks);
+  return comm_interface_->syncWorkspaceAllocation(handle);
+}
+
+void MemoryManager::releaseWorkspaceBuffers(const WorkspaceHandle& handle) {
+  for (const auto& [rank, buffers] : handle.buffers) {
+    if (rank == self_rank_) {
+      for (const auto& buffer : buffers) {
+        if (comm_interface_) {
+          comm_interface_->deregisterMemoryRegion(buffer);
+        }
+      }
+    }
+  }
+}
+
+std::string MemoryManager::generateShmemKey(void* ptr) {
+  std::random_device rd;
+  std::mt19937_64 gen(rd());
+  std::uniform_int_distribution<uint64_t> dis;
+  return std::to_string(dis(gen)) + "_" + std::to_string(reinterpret_cast<uint64_t>(ptr));
+}
+
+int MemoryManager::getMasterRank(const std::vector<int>& ranks) {
+  if (ranks.empty()) return -1;
+  return *std::min_element(ranks.begin(), ranks.end());
 }
 
 } // namespace pccl::engine

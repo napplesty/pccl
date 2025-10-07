@@ -21,19 +21,9 @@ enum class ChannelType {
 
 enum class ConnectionState {
   DISCONNECTED,
+  CONNECTING,
   CONNECTED,
   ERROR
-};
-
-enum class OobMsgType {
-  HEARTBEAT,
-  TOPOLOGY_UPDATE,
-  NODE_JOIN,
-  NODE_LEAVE,
-  CHANNEL_REQUEST,
-  CHANNEL_RESPONSE,
-  METRICS_UPDATE,
-  HEALTH_CHECK
 };
 
 struct Endpoint {
@@ -45,63 +35,41 @@ struct Endpoint {
 
   nlohmann::json toJson() const;
   static Endpoint fromJson(const nlohmann::json& json_data);
+  
+  std::string toString() const;
 };
 
 struct MemRegion {
   void* ptr_;
   size_t size_;
-  uint32_t type_;
+  uint32_t lkey_;
+  uint32_t rkey_;
+  
+  MemRegion() : ptr_(nullptr), size_(0), lkey_(0), rkey_(0) {}
+  MemRegion(void* ptr, size_t size, uint32_t lkey = 0, uint32_t rkey = 0) 
+    : ptr_(ptr), size_(size), lkey_(lkey), rkey_(rkey) {}
 };
 
 struct NetMetrics {
   float bandwidth_;
   float latency_;
+  uint64_t total_bytes_;
+  uint64_t total_operations_;
   
+  NetMetrics() : bandwidth_(0), latency_(0), total_bytes_(0), total_operations_(0) {}
   float effectiveBandwidth(size_t data_size) const;
-};
-
-struct SendConfig {
-  size_t frag_size_;
-  int parallel_;
-  uint32_t timeout_;
-  uint32_t retries_;
-};
-
-struct OobMessage {
-  OobMsgType type_;
-  uint64_t seq_id_;
-  uint64_t timestamp_;
-  int src_rank;
-  std::vector<uint8_t> payload_;
-
-  nlohmann::json toJson() const;
-  static OobMessage fromJson(const nlohmann::json& json_data);
-};
-
-class OobChannel {
-public:
-  virtual ~OobChannel() = default;
-  
-  virtual bool init(const Endpoint& self_endpoint) = 0;
-  virtual void shutdown() = 0;
-  virtual bool send(const OobMessage& msg, const Endpoint& dst) = 0;
-  virtual bool broadcast(const OobMessage& msg, const std::vector<Endpoint>& targets) = 0;
-  virtual bool poll(OobMessage* msg, uint32_t timeout_ms) = 0;
-  virtual bool registerHandler(OobMsgType type, std::function<void(const OobMessage&)> handler) = 0;
-  virtual std::vector<Endpoint> getConnectedNodes() const = 0;
-  virtual bool isConnected(const Endpoint& endpoint) const = 0;
 };
 
 class CommEngine {
 public:
   virtual ~CommEngine() = default;
   
-  virtual bool prepSend(const MemRegion& dst, const MemRegion& src, uint64_t tx_id) = 0;
-  virtual bool postSend(uint64_t tx_id) = 0;
+  virtual uint64_t prepSend(const MemRegion& dst, const MemRegion& src) = 0;
+  virtual void postSend() = 0;
   virtual void signal(uint64_t tx_mask) = 0;
-  virtual uint64_t checkSignals() = 0;
-  virtual bool waitTx(uint64_t tx_id, uint32_t timeout) = 0;
-  virtual bool flush(uint64_t tx_mask) = 0;
+  virtual bool checkSignal(uint64_t tx_mask) = 0;
+  virtual bool waitTx(uint64_t tx_id) = 0;
+  virtual bool flush() = 0;
   
   virtual bool connect(const Endpoint& self, const Endpoint& peer) = 0;
   virtual void disconnect() = 0;
@@ -109,16 +77,13 @@ public:
 
   virtual NetMetrics getStats() const = 0;
   virtual void updateStats(const NetMetrics& stats) = 0;
-  virtual bool supportsMemType(uint32_t mem_type) const = 0;
-  virtual uint32_t maxConcurrentTx() const = 0;
   
   virtual ChannelType getType() const = 0;
   virtual const Endpoint& getSelfEndpoint() const = 0;
   virtual const Endpoint& getPeerEndpoint() const = 0;
-
-  static std::unique_ptr<CommEngine> create(ChannelType type, 
-                                            const Endpoint& local_endpoint, 
-                                            const Endpoint& remote_endpoint);
+  
+  virtual bool registerMemoryRegion(const MemRegion& region) = 0;
+  virtual bool deregisterMemoryRegion(const MemRegion& region) = 0;
 };
 
 class CommunicationChannel {
@@ -129,38 +94,50 @@ public:
   bool initialize();
   void shutdown();
   
-  bool prepSend(const MemRegion& dst, const MemRegion& src, uint64_t tx_id);
-  bool postSend(uint64_t tx_id);
+  uint64_t prepSend(const MemRegion& dst, const MemRegion& src);
+  bool postSend();
   void signal(uint64_t tx_mask);
-  uint64_t checkSignals();
-  bool waitTx(uint64_t tx_id, uint32_t timeout);
-  bool flush(uint64_t tx_mask);
+  bool checkSignal(uint64_t tx_mask);
+  bool waitTx(uint64_t tx_id);
+  bool flush();
   
-  bool connect(const Endpoint& self, const Endpoint& peer);
+  bool connect();
   void disconnect();
   bool connected() const;
 
   NetMetrics getStats() const;
   void updateStats(const NetMetrics& stats);
-  bool supportsMemType(uint32_t mem_type) const;
-  uint32_t maxConcurrentTx() const;
   
   bool addEngine(std::unique_ptr<CommEngine> engine);
-  bool addEngine(ChannelType type);
   bool removeEngine(ChannelType type);
-  bool hasEngine(ChannelType type) const;
+  
+  bool registerMemoryRegion(const MemRegion& region);
+  bool deregisterMemoryRegion(const MemRegion& region);
   
   const Endpoint& getSelfEndpoint() const;
   const Endpoint& getPeerEndpoint() const;
   
-  std::vector<ChannelType> getAvailableEngineTypes() const;
-  void updateEngineMetrics(ChannelType type, const NetMetrics& metrics);
-
+  ChannelType getBestEngineType() const;
+  
 private:
   struct EngineInfo {
     std::unique_ptr<CommEngine> engine_;
     NetMetrics metrics_;
-    double current_score_;
+    bool enabled_;
+    EngineInfo() : engine_(nullptr), enabled_(false) {}
+    EngineInfo(std::unique_ptr<CommEngine> engine) 
+      : engine_(std::move(engine)), enabled_(true) {}
+  };
+  
+  struct Transaction {
+    uint64_t id_;
+    std::vector<std::pair<ChannelType, uint64_t>> fragments_;
+    size_t total_size_;
+    std::atomic<size_t> completed_fragments_;
+    std::atomic<bool> completed_;
+    
+    Transaction(uint64_t id, size_t size) 
+      : id_(id), total_size_(size), completed_fragments_(0), completed_(false) {}
   };
   
   Endpoint self_endpoint_;
@@ -169,70 +146,49 @@ private:
   mutable std::mutex engines_mutex_;
   std::atomic<ConnectionState> state_;
   
-  struct FragmentedTransaction {
-    uint64_t parent_tx_id_;
-    std::vector<std::pair<ChannelType, uint64_t>> fragment_tx_ids_;
-    size_t total_size_;
-    size_t completed_fragments_;
-  };
-  
-  std::unordered_map<uint64_t, FragmentedTransaction> fragmented_tx_;
-  uint64_t next_tx_id_;
+  std::unordered_map<uint64_t, std::shared_ptr<Transaction>> transactions_;
+  std::atomic<uint64_t> next_tx_id_;
   std::mutex tx_mutex_;
   
-  CommEngine* selectBestEngine(size_t data_size) const;
-  bool setupFragmentedSend(const MemRegion& dst, const MemRegion& src, uint64_t tx_id);
-  void handleFragmentCompletion(uint64_t parent_tx_id, ChannelType engine_type, uint64_t fragment_tx_id);
-  double calculateEngineScore(const EngineInfo& engine, size_t data_size) const;
+  std::unordered_map<void*, MemRegion> registered_regions_;
+  std::mutex regions_mutex_;
+  
+  ChannelType selectBestEngine(size_t data_size) const;
+  void updateEngineMetrics(ChannelType type, size_t data_size, double latency);
+  void handleFragmentCompletion(ChannelType engine_type, uint64_t fragment_id);
+  void cleanupCompletedTransactions();
 };
 
 class ChannelManager {
 public:
-  ChannelManager(std::unique_ptr<OobChannel> oob_channel);
+  ChannelManager();
   ~ChannelManager();
   
   bool initialize(const Endpoint& self_endpoint);
   void shutdown();
   
   bool registerEngineFactory(ChannelType type, 
-                           std::function<std::unique_ptr<CommEngine>(const Endpoint&, const Endpoint&)> factory);
+    std::function<std::unique_ptr<CommEngine>(const Endpoint&, const Endpoint&)> factory);
   
   std::shared_ptr<CommunicationChannel> getOrCreateChannel(const Endpoint& peer_endpoint);
   bool removeChannel(const Endpoint& peer_endpoint);
   std::shared_ptr<CommunicationChannel> getChannel(const Endpoint& peer_endpoint) const;
   
-  bool addEngineToChannel(const Endpoint& peer_endpoint, ChannelType type);
-  bool removeEngineFromChannel(const Endpoint& peer_endpoint, ChannelType type);
+  std::vector<Endpoint> getConnectedEndpoints() const;
+  bool isEndpointConnected(const Endpoint& endpoint) const;
   
-  void updateNodeMapping(const std::string& node_id, const Endpoint& endpoint);
-  void removeNodeMapping(const std::string& node_id);
-  Endpoint resolveNodeId(const std::string& node_id) const;
+  void updateClusterConfigs(const std::map<int, nlohmann::json>& cluster_configs);
   
-  std::vector<Endpoint> getConnectedPeers() const;
-  std::set<ChannelType> getAvailableChannelTypes(const Endpoint& peer_endpoint) const;
-
 private:
-  struct NodeInfo {
-    std::string node_id_;
-    Endpoint endpoint_;
-    uint64_t last_updated_;
-    std::set<ChannelType> supported_channels_;
-  };
-  
-  std::unique_ptr<OobChannel> oob_channel_;
   Endpoint self_endpoint_;
-  
-  std::unordered_map<ChannelType, 
-                    std::function<std::unique_ptr<CommEngine>(const Endpoint&, const Endpoint&)>> engine_factories_;
   std::map<Endpoint, std::shared_ptr<CommunicationChannel>> channels_;
-  std::unordered_map<std::string, NodeInfo> node_map_;
+  std::unordered_map<ChannelType, 
+    std::function<std::unique_ptr<CommEngine>(const Endpoint&, const Endpoint&)>> engine_factories_;
   
   mutable std::mutex channels_mutex_;
-  mutable std::mutex node_map_mutex_;
   
-  void handleOobMessage(const OobMessage& msg);
-  void establishOptimalEngines(const Endpoint& peer_endpoint);
-  void reconnectNode(const std::string& node_id, const Endpoint& new_endpoint);
+  void establishChannel(const Endpoint& peer_endpoint);
+  void reconnectChannel(const Endpoint& peer_endpoint);
 };
 
 } // namespace pccl::communicator

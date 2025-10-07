@@ -1,296 +1,136 @@
 #include "plugins/atcp/tcp_adapter.h"
-#include <thread>
-#include <chrono>
+#include "plugins/atcp/tcp_utils.h"
+#include "utils/logging.h"
+#include <cstring>
 
 namespace pccl::communicator {
 
-TCPAdapter::TCPAdapter(const Endpoint& local_endpoint, const Endpoint& remote_endpoint)
-  : self_endpoint_(local_endpoint), peer_endpoint_(remote_endpoint) {
-  
-  current_stats_.bandwidth_ = 10000.0;
-  current_stats_.latency_ = 10.0;
-  current_stats_.loss_rate_ = 0.001;
-  current_stats_.max_frag_ = 64 * 1024;
-  current_stats_.best_frag_ = 8 * 1024;
-  current_stats_.updated_ = 0;
+TCPAdapter::TCPAdapter(const Endpoint& self, const Endpoint& peer)
+  : self_endpoint_(self), peer_endpoint_(peer) {
+  tcp_manager_ = std::make_unique<pccl::TcpManager>();
 }
 
 TCPAdapter::~TCPAdapter() {
   disconnect();
-  cleanup();
-}
-
-bool TCPAdapter::initializeTCP() {
-  try {
-    tcp_manager_ = std::make_unique<pccl::TcpManager>();
-    
-    std::string local_ip = self_endpoint_.attributes_.at("ip");
-    std::string token = "tcp_token_" + std::to_string(reinterpret_cast<uintptr_t>(this));
-    
-    if (!tcp_manager_->initialize(local_ip, token)) {
-      return false;
-    }
-    
-    connection_id_ = tcp_manager_->createConnection();
-    if (connection_id_ == 0) {
-      return false;
-    }
-    
-    pccl::TcpManager::QPConfig qp_config;
-    qp_id_ = tcp_manager_->createQP(connection_id_, qp_config);
-    if (qp_id_ == 0) {
-      return false;
-    }
-    
-    std::string peer_ip = peer_endpoint_.attributes_.at("ip");
-    uint16_t peer_port = std::stoul(peer_endpoint_.attributes_.at("port"));
-    std::string peer_gid = peer_endpoint_.attributes_.at("gid");
-    tcp_manager_->registerGID(peer_gid, peer_ip, peer_port);
-    
-    return true;
-  } catch (const std::exception& e) {
-    return false;
-  }
-}
-
-bool TCPAdapter::setupConnection() {
-  try {
-    if (!tcp_manager_->modifyQPToInit(connection_id_, qp_id_)) {
-      return false;
-    }
-    
-    std::string peer_gid = peer_endpoint_.attributes_.at("gid");
-    if (!tcp_manager_->modifyQPToRTR(connection_id_, qp_id_, peer_gid)) {
-      return false;
-    }
-    
-    if (!tcp_manager_->modifyQPToRTS(connection_id_, qp_id_)) {
-      return false;
-    }
-    
-    connected_ = true;
-    return true;
-  } catch (const std::exception& e) {
-    return false;
-  }
-}
-
-void TCPAdapter::processCompletions() {
-  if (!tcp_manager_) return;
-  
-  pccl::TcpWC wc[10];
-  int num_completions = tcp_manager_->pollCQ(connection_id_, 10, wc);
-  
-  std::lock_guard<std::mutex> lock(tx_mutex_);
-  for (int i = 0; i < num_completions; ++i) {
-    if (wc[i].status == pccl::TcpWCStatus::Success) {
-      uint64_t completed_tx_id = wc[i].byte_len;
-      auto tx_it = active_transactions_.find(completed_tx_id);
-      if (tx_it != active_transactions_.end()) {
-        tx_it->second.completed = true;
-        completed_transactions_.push(completed_tx_id);
-      }
-    }
-  }
-}
-
-void TCPAdapter::cleanup() {
-  if (tcp_manager_ && connection_id_ != 0) {
-    tcp_manager_.reset();
-    connection_id_ = 0;
-    qp_id_ = 0;
-  }
-  active_transactions_.clear();
-  std::queue<uint64_t> empty_queue;
-  std::swap(completed_transactions_, empty_queue);
-}
-
-bool TCPAdapter::prepSend(const MemRegion& dst, const MemRegion& src, uint64_t tx_id) {
-  std::lock_guard<std::mutex> lock(tx_mutex_);
-  
-  if (!connected_) {
-    return false;
-  }
-  
-  TCPTransaction tx;
-  tx.tx_id = tx_id;
-  tx.completed = false;
-  tx.src_addr = src.ptr_;
-  tx.dst_addr = dst.ptr_;
-  tx.data_size = src.size_;
-  tx.start_time = std::chrono::duration_cast<std::chrono::microseconds>(
-    std::chrono::steady_clock::now().time_since_epoch()).count();
-  
-  active_transactions_[tx_id] = tx;
-  return true;
-}
-
-bool TCPAdapter::postSend(uint64_t tx_id) {
-  std::lock_guard<std::mutex> lock(tx_mutex_);
-  
-  auto it = active_transactions_.find(tx_id);
-  if (it == active_transactions_.end()) {
-    return false;
-  }
-  
-  if (!connected_ || !tcp_manager_) {
-    return false;
-  }
-  
-  try {
-    pccl::TcpSendWR wr{};
-    pccl::TcpSGE sge{};
-    
-    sge.addr = it->second.src_addr;
-    sge.length = it->second.data_size;
-    sge.lkey = 0;
-    
-    wr.next = nullptr;
-    wr.sg_list = &sge;
-    wr.num_sge = 1;
-    
-    if (!tcp_manager_->postSend(connection_id_, qp_id_, &wr)) {
-      return false;
-    }
-    
-    return true;
-  } catch (const std::exception& e) {
-    return false;
-  }
-}
-
-void TCPAdapter::signal(uint64_t tx_mask) {
-  signal_mask_.fetch_or(tx_mask, std::memory_order_release);
-}
-
-uint64_t TCPAdapter::checkSignals() {
-  uint64_t current_mask = signal_mask_.load(std::memory_order_acquire);
-  uint64_t completed_mask = 0;
-  
-  processCompletions();
-  
-  std::lock_guard<std::mutex> lock(tx_mutex_);
-  while (!completed_transactions_.empty()) {
-    uint64_t completed_tx_id = completed_transactions_.front();
-    completed_transactions_.pop();
-    
-    if (current_mask & (1ULL << completed_tx_id)) {
-      completed_mask |= (1ULL << completed_tx_id);
-      
-      auto tx_it = active_transactions_.find(completed_tx_id);
-      if (tx_it != active_transactions_.end()) {
-        active_transactions_.erase(tx_it);
-      }
-    }
-  }
-  
-  signal_mask_.fetch_and(~completed_mask, std::memory_order_release);
-  return completed_mask;
-}
-
-bool TCPAdapter::waitTx(uint64_t tx_id, uint32_t timeout) {
-  auto start_time = std::chrono::steady_clock::now();
-  auto timeout_duration = std::chrono::milliseconds(timeout);
-  
-  while (std::chrono::steady_clock::now() - start_time < timeout_duration) {
-    processCompletions();
-    
-    std::lock_guard<std::mutex> lock(tx_mutex_);
-    auto it = active_transactions_.find(tx_id);
-    if (it != active_transactions_.end() && it->second.completed) {
-      active_transactions_.erase(it);
-      return true;
-    }
-    
-    std::this_thread::sleep_for(std::chrono::microseconds(100));
-  }
-  
-  return false;
-}
-
-bool TCPAdapter::flush(uint64_t tx_mask) {
-  auto start_time = std::chrono::steady_clock::now();
-  constexpr uint32_t timeout_ms = 5000;
-  auto timeout_duration = std::chrono::milliseconds(timeout_ms);
-  
-  while (std::chrono::steady_clock::now() - start_time < timeout_duration) {
-    processCompletions();
-    
-    std::lock_guard<std::mutex> lock(tx_mutex_);
-    bool all_completed = true;
-    
-    for (const auto& tx_pair : active_transactions_) {
-      if (tx_mask & (1ULL << tx_pair.first) && !tx_pair.second.completed) {
-        all_completed = false;
-        break;
-      }
-    }
-    
-    if (all_completed) {
-      for (auto it = active_transactions_.begin(); it != active_transactions_.end();) {
-        if (tx_mask & (1ULL << it->first)) {
-          it = active_transactions_.erase(it);
-        } else {
-          ++it;
-        }
-      }
-      return true;
-    }
-    
-    std::this_thread::sleep_for(std::chrono::microseconds(100));
-  }
-  
-  return false;
 }
 
 bool TCPAdapter::connect(const Endpoint& self, const Endpoint& peer) {
-  if (connected_) {
-    disconnect();
-  }
-  
-  self_endpoint_ = self;
-  peer_endpoint_ = peer;
-  
-  if (!initializeTCP()) {
+  try {
+    std::string local_ip = self.attributes_.at("pccl.tcp.local_ip");
+    std::string remote_ip = peer.attributes_.at("pccl.tcp.remote_ip");
+    uint16_t remote_port = std::stoi(peer.attributes_.at("pccl.tcp.remote_port"));
+    
+    if (!tcp_manager_->initialize(local_ip, "pccl_token")) {
+      PCCL_LOG_ERROR("Failed to initialize TCP manager");
+      return false;
+    }
+    
+    pccl::GID remote_gid = remote_ip + ":" + std::to_string(remote_port);
+    tcp_manager_->registerGID(remote_gid, remote_ip, remote_port);
+    
+    conn_id_ = tcp_manager_->createConnection();
+    if (conn_id_ == 0) {
+      PCCL_LOG_ERROR("Failed to create TCP connection");
+      return false;
+    }
+    
+    qp_id_ = tcp_manager_->createQP(conn_id_);
+    if (qp_id_ == 0) {
+      PCCL_LOG_ERROR("Failed to create TCP QP");
+      return false;
+    }
+    
+    if (!tcp_manager_->modifyQPToInit(conn_id_, qp_id_)) {
+      PCCL_LOG_ERROR("Failed to modify QP to INIT");
+      return false;
+    }
+    
+    if (!tcp_manager_->modifyQPToRTR(conn_id_, qp_id_, remote_gid)) {
+      PCCL_LOG_ERROR("Failed to modify QP to RTR");
+      return false;
+    }
+    
+    if (!tcp_manager_->modifyQPToRTS(conn_id_, qp_id_)) {
+      PCCL_LOG_ERROR("Failed to modify QP to RTS");
+      return false;
+    }
+    
+    PCCL_LOG_INFO("TCP adapter connected successfully");
+    return true;
+  } catch (const std::exception& e) {
+    PCCL_LOG_ERROR("TCP connection failed: {}", e.what());
     return false;
   }
-  
-  if (!setupConnection()) {
-    cleanup();
-    return false;
-  }
-  
-  connected_ = true;
-  return true;
 }
 
 void TCPAdapter::disconnect() {
-  connected_ = false;
-  cleanup();
+  if (tcp_manager_ && conn_id_ != 0) {
+    tcp_manager_.reset();
+    conn_id_ = 0;
+    qp_id_ = 0;
+  }
+}
+
+uint64_t TCPAdapter::prepSend(const MemRegion& dst, const MemRegion& src) {
+  if (!connected()) {
+    PCCL_LOG_ERROR("TCP adapter not connected");
+    return 0;
+  }
+  
+  auto wr = buildSendWR(dst, src);
+  if (!tcp_manager_->postSend(conn_id_, qp_id_, &wr)) {
+    PCCL_LOG_ERROR("Failed to post TCP send");
+    return 0;
+  }
+  
+  return next_tx_id_.fetch_add(1);
+}
+
+void TCPAdapter::postSend() {
+}
+
+void TCPAdapter::signal(uint64_t tx_mask) {
+}
+
+bool TCPAdapter::checkSignal(uint64_t tx_mask) {
+  return true;
+}
+
+bool TCPAdapter::waitTx(uint64_t tx_id) {
+  if (!connected()) {
+    return false;
+  }
+  
+  pccl::TcpWC wc;
+  int retries = 0;
+  const int max_retries = 1000;
+  
+  while (retries < max_retries) {
+    int count = tcp_manager_->pollCQ(conn_id_, 1, &wc);
+    if (count > 0) {
+      return wc.status == pccl::TcpWCStatus::Success;
+    }
+    std::this_thread::sleep_for(std::chrono::microseconds(10));
+    retries++;
+  }
+  
+  PCCL_LOG_ERROR("TCP transaction timeout");
+  return false;
+}
+
+bool TCPAdapter::flush() {
+  return true;
 }
 
 bool TCPAdapter::connected() const {
-  return connected_.load();
+  return conn_id_ != 0 && qp_id_ != 0;
 }
 
 NetMetrics TCPAdapter::getStats() const {
-  std::lock_guard<std::mutex> lock(stats_mutex_);
-  return current_stats_;
+  return NetMetrics{};
 }
 
 void TCPAdapter::updateStats(const NetMetrics& stats) {
-  std::lock_guard<std::mutex> lock(stats_mutex_);
-  current_stats_ = stats;
-  current_stats_.updated_ = std::chrono::duration_cast<std::chrono::microseconds>(
-    std::chrono::steady_clock::now().time_since_epoch()).count();
-}
-
-bool TCPAdapter::supportsMemType(uint32_t mem_type) const {
-  return mem_type == 0;
-}
-
-uint32_t TCPAdapter::maxConcurrentTx() const {
-  return 256;
 }
 
 ChannelType TCPAdapter::getType() const {
@@ -303,6 +143,60 @@ const Endpoint& TCPAdapter::getSelfEndpoint() const {
 
 const Endpoint& TCPAdapter::getPeerEndpoint() const {
   return peer_endpoint_;
+}
+
+pccl::TcpSendWR TCPAdapter::buildSendWR(const MemRegion& dst, const MemRegion& src) {
+  pccl::TcpSendWR wr;
+  auto sge = new pccl::TcpSGE[1];
+  sge[0].addr = src.ptr_;
+  sge[0].length = src.size_;
+  sge[0].lkey = 0;
+  
+  wr.sg_list = sge;
+  wr.num_sge = 1;
+  wr.next = nullptr;
+  
+  return wr;
+}
+
+pccl::TcpWriteWR TCPAdapter::buildWriteWR(const MemRegion& dst, const MemRegion& src) {
+  pccl::TcpWriteWR wr;
+  auto sge = new pccl::TcpSGE[1];
+  sge[0].addr = src.ptr_;
+  sge[0].length = src.size_;
+  sge[0].lkey = 0;
+  
+  wr.sg_list = sge;
+  wr.num_sge = 1;
+  wr.next = nullptr;
+  
+  pccl::TcpRemoteMRMetadata remote_mr;
+  remote_mr.remote_gid = peer_endpoint_.attributes_.at("pccl.remote.gid");
+  remote_mr.remote_addr = reinterpret_cast<uint64_t>(dst.ptr_);
+  remote_mr.remote_rkey = std::stoul(peer_endpoint_.attributes_.at("pccl.remote.rkey"));
+  wr.remote_mr = remote_mr;
+  
+  return wr;
+}
+
+pccl::TcpReadWR TCPAdapter::buildReadWR(const MemRegion& dst, const MemRegion& src) {
+  pccl::TcpReadWR wr;
+  auto sge = new pccl::TcpSGE[1];
+  sge[0].addr = dst.ptr_;
+  sge[0].length = dst.size_;
+  sge[0].lkey = 0;
+  
+  wr.sg_list = sge;
+  wr.num_sge = 1;
+  wr.next = nullptr;
+  
+  pccl::TcpRemoteMRMetadata remote_mr;
+  remote_mr.remote_gid = peer_endpoint_.attributes_.at("pccl.remote.gid");
+  remote_mr.remote_addr = reinterpret_cast<uint64_t>(src.ptr_);
+  remote_mr.remote_rkey = std::stoul(peer_endpoint_.attributes_.at("pccl.remote.rkey"));
+  wr.remote_mr = remote_mr;
+  
+  return wr;
 }
 
 } // namespace pccl::communicator

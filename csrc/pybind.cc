@@ -4,9 +4,9 @@
 #include <pybind11/numpy.h>
 #include <pybind11/operators.h>
 
-#include "runtime/api/configs.h"
 #include "runtime/api/repr.h"
 #include "runtime/api/runtime.h"
+#include <nlohmann/json.hpp>
 
 namespace py = pybind11;
 
@@ -78,11 +78,13 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
 
     py::class_<RuntimeConfig>(m, "RuntimeConfig")
         .def(py::init<>())
-        .def_readwrite("local_rank", &RuntimeConfig::local_rank)
+        .def_readwrite("rank", &RuntimeConfig::rank)
         .def_readwrite("world_size", &RuntimeConfig::world_size)
-        .def_readwrite("buffers_per_executor", &RuntimeConfig::buffers_per_executor)
-        .def_readwrite("default_buffer_sizes", &RuntimeConfig::default_buffer_sizes)
-        .def_readwrite("extra_config", &RuntimeConfig::extra_config);
+        .def_readwrite("buffer_nums", &RuntimeConfig::buffer_nums)
+        .def_readwrite("buffer_sizes", &RuntimeConfig::buffer_sizes)
+        .def_readwrite("endpoint_configs", &RuntimeConfig::endpoint_configs)
+        .def("toJson", &RuntimeConfig::toJson)
+        .def_static("fromJson", &RuntimeConfig::fromJson);
 
     py::class_<PrimitiveGrpah>(m, "PrimitiveGraph")
         .def(py::init<int>(), py::arg("rank"))
@@ -101,7 +103,7 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
         .def_static("loadFromJson", &PrimitiveGrpah::loadFromJson, py::arg("json_data"));
 
     m.def("initializeRuntime", &initializeRuntime, 
-          py::arg("config"), 
+          py::arg("runtime_configs"), py::arg("rank"), py::arg("world_size"),
           "Initialize the PCCL runtime with the given configuration");
 
     m.def("shutdownRuntime", &shutdownRuntime, 
@@ -112,8 +114,22 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
           py::arg("input"), py::arg("output"),
           "Execute a primitive graph with the given participants");
 
-    m.def("get_global_config", &get_global_config, 
-          "Get the global PCCL configuration");
+    m.def("updatePeer", &updatePeer, 
+          py::arg("peer_config"),
+          "Update peer configuration");
+
+    m.def("generateOperatorId", &generateOperatorId, 
+          "Generate a unique operator ID");
+
+    m.def("registerCommunicationResources", &registerCommunicationResources, 
+          py::arg("config"),
+          "Register communication resources");
+
+    m.def("getExecutorConfig", &getExecutorConfig, 
+          py::arg("graph"),
+          "Get executor configuration for the graph");
+
+    // Note: get_global_config function is not available in current runtime.h
 
     m.def("get_version", []() -> std::string {
         return "PCCL Python Bindings v1.0.0";
@@ -122,4 +138,3 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.attr("__version__") = "1.0.0";
     m.attr("__author__") = "PCCL Team";
 }
-

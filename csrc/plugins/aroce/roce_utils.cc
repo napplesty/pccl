@@ -1,5 +1,4 @@
 #include "plugins/aroce/roce_utils.h"
-#include "plugins/aroce/roce_config.h"
 #include <utils/exception.hpp>
 #include <format>
 
@@ -477,11 +476,11 @@ VerbsRemotePeerInfo& VerbsRemotePeerInfo::operator=(VerbsRemotePeerInfo&& other)
 
 VerbsManager::QPConfig::QPConfig() 
   : qp_type(IBV_QPT_RC), 
-    max_send_wr(VerbsConfig::getInstance().max_send_wr), 
-    max_recv_wr(VerbsConfig::getInstance().max_recv_wr), 
-    max_send_sge(VerbsConfig::getInstance().max_send_sge), 
-    max_recv_sge(VerbsConfig::getInstance().max_recv_sge), 
-    max_inline_data(VerbsConfig::getInstance().max_inline_data) {}
+    max_send_wr(1024), 
+    max_recv_wr(1024), 
+    max_send_sge(32), 
+    max_recv_sge(32), 
+    max_inline_data(0) {}
 
 VerbsManager::ConnectionInfo::ConnectionInfo() = default;
 
@@ -519,7 +518,7 @@ VerbsManager::ConnectionInfo& VerbsManager::ConnectionInfo::operator=(Connection
 }
 
 VerbsManager::VerbsManager() {
-  VerbsLib::getInstance().load(VerbsConfig::getInstance().lib_path);
+  VerbsLib::getInstance().load("libibverbs.so");
 }
 
 VerbsManager::~VerbsManager() {

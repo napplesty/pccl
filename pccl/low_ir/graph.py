@@ -9,7 +9,7 @@ class PrimitiveGraph:
         self.rank = rank
         self.buffers: Dict[int, BufferConfig] = {}
         self.operators: List[PrimitiveConfig] = []
-        self.dependencies: Dict[int, List[int]] = {}  # op_id -> 依赖的op_ids
+        self.dependencies: Dict[int, List[int]] = {}
     
     def add_buffer(self, idx: int, dtype: DataType, size: int, executor_type: ExecutorType):
         buffer = BufferConfig(idx, dtype, size, executor_type)
