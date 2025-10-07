@@ -1,27 +1,42 @@
-#include "runtime/engine/graph_executor.h"
+#include "plugins/ahost/executor.h"
 
-namespace pccl::engine {
+namespace pccl::engine::host {
 
-GraphExecutor::GraphExecutor() : graph_layout_(nullptr) {
+HostExecutorManager::HostExecutorManager(GraphBufferLayout* graph_layout, 
+                                        int num_threads, 
+                                        ReadyQueueLayout *ready_queues,
+                                        int num_queues)
+  : graph_layout_(graph_layout),
+    num_threads_(num_threads),
+    ready_queues_(ready_queues),
+    num_queues_(num_queues) {
 }
 
-GraphExecutor::~GraphExecutor() {
+HostExecutorManager::~HostExecutorManager() {
 }
 
-bool GraphExecutor::initialize(GraphBufferLayout* graph_layout, 
-                              const std::map<ExecutorType, int> &executor_config,
-                              std::map<std::string, std::string> &extra_params) {
-  graph_layout_ = graph_layout;
+bool HostExecutorManager::initialize() {
   return true;
 }
 
-void GraphExecutor::issue() {
+void HostExecutorManager::launch() {
 }
 
-void GraphExecutor::wait() {
+void HostExecutorManager::wait() {
 }
 
-void GraphExecutor::initialize_ready_queues() {
+bool initialize_host_executor(HostExecutorManager* manager) {
+  return manager->initialize();
 }
 
-} // namespace pccl::engine
+void start_host_executor(HostExecutorManager* manager) {
+  manager->launch();
+}
+
+void stop_host_executor(HostExecutorManager* manager) {
+}
+
+void wait_host_executor(HostExecutorManager* manager) {
+}
+
+} // namespace pccl::engine::host

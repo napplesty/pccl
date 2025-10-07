@@ -1,42 +1,47 @@
-#include "plugins/ahost/executor.h"
+#include "runtime/engine/graph_executor.h"
 
-namespace pccl::engine::host {
+namespace pccl::engine {
 
-HostExecutorManager::HostExecutorManager(GraphBufferLayout* graph_layout, 
-                                        int num_threads, 
-                                        ReadyQueueLayout *ready_queues,
-                                        int num_queues)
-  : graph_layout_(graph_layout),
-    num_threads_(num_threads),
-    ready_queues_(ready_queues),
-    num_queues_(num_queues) {
+class GraphExecutor::Impl {
+public:
+  bool initialize(GraphBufferLayout* graph_layout, 
+                 const std::map<ExecutorType, int> &executor_config,
+                 std::map<std::string, std::string> &extra_params) {
+    return false;
+  }
+
+  void issue() {
+  }
+
+  void wait() {
+  }
+
+  void initialize_ready_queues() {
+  }
+};
+
+GraphExecutor::GraphExecutor() : impl_(new Impl()) {
 }
 
-HostExecutorManager::~HostExecutorManager() {
+GraphExecutor::~GraphExecutor() {
 }
 
-bool HostExecutorManager::initialize() {
-  return true;
+bool GraphExecutor::initialize(GraphBufferLayout* graph_layout, 
+                              const std::map<ExecutorType, int> &executor_config,
+                              std::map<std::string, std::string> &extra_params) {
+  return impl_->initialize(graph_layout, executor_config, extra_params);
 }
 
-void HostExecutorManager::launch() {
+void GraphExecutor::issue() {
+  impl_->issue();
 }
 
-void HostExecutorManager::wait() {
+void GraphExecutor::wait() {
+  impl_->wait();
 }
 
-bool initialize_host_executor(HostExecutorManager* manager) {
-  return manager->initialize();
+void GraphExecutor::initialize_ready_queues() {
+  impl_->initialize_ready_queues();
 }
 
-void start_host_executor(HostExecutorManager* manager) {
-  manager->launch();
-}
-
-void stop_host_executor(HostExecutorManager* manager) {
-}
-
-void wait_host_executor(HostExecutorManager* manager) {
-}
-
-} // namespace pccl::engine::host
+} // namespace pccl::engine
