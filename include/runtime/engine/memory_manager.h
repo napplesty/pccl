@@ -13,6 +13,7 @@ namespace pccl::engine {
 using runtime::ExecutorType;
 
 struct GlobalBufferID {
+  void *addr;
   uint64_t value;
 
   GlobalBufferID() : value(0) {}
@@ -37,17 +38,7 @@ struct SignalBufferEntry {
 struct WorkspaceHandle {
   uint64_t operator_id;
   std::vector<int> participant_ranks;
-  std::map<ExecutorType, std::vector<GlobalBufferID>> allocated_buffers;
-  std::map<int, std::vector<GlobalBufferID>> remote_buffers;
-  void* signal_buffer;
-};
-
-struct DistributedMemoryConfig {
-  int local_rank;
-  int world_size;
-  std::map<ExecutorType, int> buffers_per_executor;
-  std::map<ExecutorType, unsigned long long> default_buffer_sizes;
-  std::map<std::string, std::string> extra_config;
+  std::map<int, std::vector<GlobalBufferID>> buffers;
 };
 
 class MemoryManagerCommInterface {

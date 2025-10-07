@@ -1,3 +1,4 @@
+#include "runtime/engine/graph_executor.h"
 #include <plugins/acu/executor.h>
 #include <plugins/acu/kernel_impls/tensor_ops.h>
 #include <cuda_runtime.h>
@@ -5,87 +6,53 @@
 
 namespace pccl::engine::cuda {
 
-CUDAExecutorManager::CUDAExecutorManager(GraphBufferLayout* graph_layout, int num_sms)
-    : graph_layout_(graph_layout), num_sms_(num_sms) {
-}
-
-CUDAExecutorManager::~CUDAExecutorManager() {
-  stop();
-  wait();
-}
-
-bool CUDAExecutorManager::initialize() {
-  int device_count;
-  cudaError_t err = cudaGetDeviceCount(&device_count);
-  if (err != cudaSuccess || device_count == 0) {
-    return false;
-  }
-  
-  err = cudaSetDevice(0);
-  if (err != cudaSuccess) {
-    return false;
-  }
-  
-  initialized_ = true;
-  return true;
-}
-
-void CUDAExecutorManager::start(cudaStream_t stream) {
-  if (!initialized_ || !graph_layout_) return;
-  
-  current_stream_ = stream;
-  int threads_per_block = 256;
-  int num_blocks = num_sms_;
-  
-  if (current_stream_ == 0) {
-    cudaStreamCreate(&current_stream_);
-  }
-  
-  launch_cuda_kernel(graph_layout_, num_blocks, threads_per_block, current_stream_);
-  
-  if (stream == 0) {
-    cudaStreamSynchronize(current_stream_);
-    cudaStreamDestroy(current_stream_);
-    current_stream_ = 0;
-  }
-}
-
-void CUDAExecutorManager::stop() {
-}
-
-void CUDAExecutorManager::wait() {
-  if (current_stream_ != 0) {
-    cudaStreamSynchronize(current_stream_);
-  } else {
-    cudaDeviceSynchronize();
-  }
-}
-
-void CUDAExecutorManager::launch_cuda_kernel(GraphBufferLayout* graph_layout, int num_blocks, int threads_per_block, cudaStream_t stream) {
-  cuda_executor_kernel<<<num_blocks, threads_per_block, 0, stream>>>(graph_layout);
-}
-
 __global__ void cuda_executor_kernel(GraphBufferLayout* graph_layout) {
-  int thread_id = blockIdx.x * blockDim.x + threadIdx.x;
-  int total_threads = gridDim.x * blockDim.x;
-  
-  for (int round = 0; round < 1000; ++round) {
-    bool work_done = false;
-    
-    for (uint64_t i = thread_id; i < graph_layout->num_queues; i += total_threads) {
-      ReadyQueueLayout* queue = &graph_layout->ready_queues[i];
-      if (queue->consumer_type != ExecutorType::CUDA) continue;
+  int thread_id = threadIdx.x;
+  int block_id = blockIdx.x;
+  int total_threads = blockDim.x * gridDim.x;
+
+  __shared__ OperatorLayout* shared_primitive[1];
+  __shared__ int execute_index_shared[1];
+  __shared__ bool work_done[1];
+
+  for (int try_time = 0; try_time < graph_layout->num_operators; try_time++) {
+    if (thread_id == 0) {
+      work_done[0] = false;
+      shared_primitive[0] = nullptr;
       
-      OperatorLayout* primitive = nullptr;
-      int execute_index = -1;
-      if (cuda_try_pop_primitive(queue, &primitive, &execute_index)) {
-        cuda_execute_primitive(primitive, execute_index);
-        work_done = true;
+      for (int queue_idx = 0; queue_idx < graph_layout->num_queues; queue_idx++) {
+        ReadyQueueLayout* queue = &graph_layout->ready_queues[queue_idx];
+        if (queue->consumer_type != ExecutorType::CUDA) continue;
         
-        if (atomicSub(&primitive->remaining_executors, 1) == 1) {
-          for (int j = 0; j < primitive->num_next; ++j) {
-            OperatorLayout* next_primitive = primitive->next_operators[j];
-            if (atomicSub(&next_primitive->dependency_count, 1) == 1) {
+        OperatorLayout* primitive = nullptr;
+        int executor_index;
+        if (cuda_try_pop_primitive(queue, &primitive, &executor_index)) {
+          shared_primitive[0] = primitive;
+          work_done[0] = true;
+          execute_index_shared[0] = executor_index;
+          break;
+        }
+      }
+    }
+
+    __syncthreads();
+
+    if (!work_done[0]) {
+      continue;
+    }
+
+    cuda_execute_primitive(shared_primitive[0], execute_index_shared[0]);
+
+    __syncthreads();
+
+    if (thread_id == 0 && shared_primitive[0] != nullptr) {
+      int old_remaining = atomicSub(&shared_primitive[0]->remaining_executors, 1);
+      if (old_remaining == 1) {
+        for (int j = 0; j < shared_primitive[0]->num_next; ++j) {
+          OperatorLayout* next_primitive = shared_primitive[0]->next_operators[j];
+          if (next_primitive != nullptr) {
+            int old_dependency = atomicSub(&next_primitive->dependency_count, 1);
+            if (old_dependency == 1) {
               for (uint64_t k = 0; k < graph_layout->num_queues; ++k) {
                 ReadyQueueLayout* next_queue = &graph_layout->ready_queues[k];
                 if (next_queue->producer_type == ExecutorType::CUDA && 
@@ -99,12 +66,7 @@ __global__ void cuda_executor_kernel(GraphBufferLayout* graph_layout) {
         }
       }
     }
-    
     __syncthreads();
-    
-    if (!work_done) {
-      break;
-    }
   }
 }
 
@@ -117,19 +79,17 @@ __device__ bool cuda_try_pop_primitive(ReadyQueueLayout* queue, OperatorLayout**
   OperatorLayout** buffer = static_cast<OperatorLayout**>(queue->buffer);
   *primitive = buffer[current_head];
   
-  int old_remaining = atomicAdd(&(*primitive)->remaining_executors, 0);
-  if (old_remaining <= 0) return false;
+  int required_executor = atomicAdd(&(*primitive)->required_executors, -1);
+  if (required_executor <= 0) return false;
   
-  *execute_index = old_remaining - 1;
+  *execute_index = required_executor - 1;
   
   uint64_t new_head = (current_head + 1) % queue->capacity;
   uint64_t expected = current_head;
-  
-  if (atomicCAS(&queue->head, expected, new_head) == expected) {
-    return true;
+  if (execute_index) {
+    atomicCAS(&queue->head, expected, new_head);
   }
-  
-  return false;
+  return true;
 }
 
 __device__ bool cuda_try_push_primitive(ReadyQueueLayout* queue, OperatorLayout* primitive) {
@@ -175,29 +135,7 @@ __device__ void cuda_execute_primitive(OperatorLayout* primitive, int execute_in
         }
       }
       break;
-      
-    case PrimitiveType::WRITE:
-      if (config.dst_buffer && config.data_size > 0) {
-        switch (config.dtype) {
-          case DataType::F32:
-            pccl::acu::direct_write_impl<float, 4>(
-                static_cast<float*>(config.dst_buffer),
-                config.data_size, execute_index, total_executors);
-            break;
-          case DataType::F16:
-            pccl::acu::direct_write_impl<half, 4>(
-                static_cast<half*>(config.dst_buffer),
-                config.data_size, execute_index, total_executors);
-            break;
-          case DataType::BF16:
-            pccl::acu::direct_write_impl<__nv_bfloat16, 4>(
-                static_cast<__nv_bfloat16*>(config.dst_buffer),
-                config.data_size, execute_index, total_executors);
-            break;
-        }
-      }
-      break;
-      
+
     case PrimitiveType::COMPUTE:
       if (config.src_buffer && config.dst_buffer && config.data_size > 0) {
         switch (config.dtype) {

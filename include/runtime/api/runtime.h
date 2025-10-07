@@ -1,5 +1,6 @@
 #pragma once
 
+#include <torch/extension.h>
 #include <runtime/api/repr.h>
 #include <runtime/engine/memory_manager.h>
 #include <runtime/engine/graph_executor.h>
@@ -19,6 +20,6 @@ bool initializeRuntime(const RuntimeConfig& config);
 
 void shutdownRuntime();
 
-bool executeGraph(const PrimitiveGrpah& graph, std::vector<int> &participants);
+bool executeGraph(const PrimitiveGrpah& graph, std::vector<int> &participants, torch::Tensor &input, torch::Tensor &output);
 
 } // namespace pccl::runtime

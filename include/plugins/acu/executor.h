@@ -6,17 +6,19 @@ namespace pccl::engine::cuda {
 
 class CUDAExecutorManager {
 public:
-  CUDAExecutorManager(GraphBufferLayout* graph_layout, int num_sms);
+  CUDAExecutorManager(GraphBufferLayout* graph_layout, 
+                      int num_sms, 
+                      ReadyQueueLayout *ready_queues,
+                      int num_queues,
+                      cudaStream_t stream = nullptr);
   ~CUDAExecutorManager();
   bool initialize();
-  void start(cudaStream_t stream = 0);
-  void stop();
-  void wait();
-  void launch_cuda_kernel(GraphBufferLayout* graph_layout, int num_blocks, int threads_per_block, cudaStream_t stream);
+  void launch();
 private:
   GraphBufferLayout* graph_layout_;
   int num_sms_;
-  bool initialized_{false};
+  ReadyQueueLayout *ready_queues_;
+  int num_queues_;
   cudaStream_t current_stream_{0};
 };
 

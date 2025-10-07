@@ -21,7 +21,6 @@ enum class ChannelType {
 
 enum class ConnectionState {
   DISCONNECTED,
-  CONNECTING,
   CONNECTED,
   ERROR
 };
@@ -57,13 +56,8 @@ struct MemRegion {
 struct NetMetrics {
   float bandwidth_;
   float latency_;
-  float loss_rate_;
-  int max_frag_;
-  int best_frag_;
-  long long updated_;
   
   float effectiveBandwidth(size_t data_size) const;
-  float scoreForDataSize(size_t data_size) const;
 };
 
 struct SendConfig {

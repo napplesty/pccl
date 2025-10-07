@@ -1,39 +1,73 @@
 #!/usr/bin/env python3
+
 import sys
 import os
-sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
 
-from pccl.api import create_collective_api
+from pccl.ir import CollectiveIR, Device, Link, DeviceType
+from pccl.spec.generators import generate_allreduce_spec
+from pccl.passes import (PassManager, ValidationPass, CanonicalizationPass, 
+                         ChunkOptimizationPass, AlgorithmGenerationPass, 
+                         PerformanceModelingPass)
+from pccl.simulator import CollectiveSimulator
+from pccl.utils.analysis import analyze_communication_pattern
 
-def main():
-    print("PCCL Collective Communication Example")
+def demo_allreduce():
+    print("=== PCCL AllReduce Demo ===")
     
-    device_ids = [0, 1, 2, 3]
-    data_size_gb = 1.0
+    devices = [
+        Device(0, DeviceType.CUDA, 100.0, 1.0),
+        Device(1, DeviceType.CUDA, 100.0, 1.0),
+        Device(2, DeviceType.CUDA, 100.0, 1.0),
+        Device(3, DeviceType.CUDA, 100.0, 1.0)
+    ]
     
-    api = create_collective_api("standard")
+    links = [
+        Link(0, 1, 10.0, 1.0),
+        Link(1, 2, 10.0, 1.0),
+        Link(2, 3, 10.0, 1.0),
+        Link(3, 0, 10.0, 1.0)
+    ]
     
-    try:
-        print("Executing AllReduce...")
-        result = api.allreduce(device_ids, data_size_gb)
+    ranks = [0, 1, 2, 3]
+    data_size = 16 * 1024 * 1024
+    
+    print(f"Creating AllReduce spec for {len(ranks)} ranks, {data_size} bytes")
+    
+    ir = generate_allreduce_spec(devices, links, ranks, data_size)
+    
+    pm = PassManager()
+    pm.add_pass(ValidationPass())
+    pm.add_pass(ChunkOptimizationPass(chunk_size=1024*1024))
+    pm.add_pass(AlgorithmGenerationPass("ring"))
+    pm.add_pass(CanonicalizationPass())
+    pm.add_pass(PerformanceModelingPass())
+    
+    print("Running compilation passes...")
+    success = pm.run(ir)
+    
+    if success:
+        print("✓ Compilation successful!")
         
-        if result.success:
-            print(f"AllReduce completed successfully in {result.execution_time_ms:.2f}ms")
-            print(f"Results: {result.results}")
-        else:
-            print(f"AllReduce failed: {result.error}")
+        analysis = analyze_communication_pattern(ir)
+        print(f"Operations: {analysis['total_operations']}")
+        print(f"Communication Volume: {analysis['communication_volume'] / (1024*1024):.2f} MB")
+        print(f"Parallelism Factor: {analysis['parallelism_factor']:.2f}")
         
-        print("\nExecuting Broadcast...")
-        result = api.broadcast(0, device_ids, data_size_gb)
+        print("\nRunning simulation...")
+        simulator = CollectiveSimulator(ir)
+        timeline = simulator.simulate()
         
-        if result.success:
-            print(f"Broadcast completed successfully in {result.execution_time_ms:.2f}ms")
-        else:
-            print(f"Broadcast failed: {result.error}")
-    
-    finally:
-        api.shutdown()
-        print("API shutdown completed")
+        print(f"Estimated Time: {timeline['total_time']:.6f} seconds")
+        print(f"Throughput: {timeline['throughput'] / (1024*1024):.2f} MB/s")
+        
+        print("\nDetailed Timeline:")
+        simulator.print_timeline_report()
+        
+    else:
+        print("✗ Compilation failed!")
+        for pass_name, result in pm.pass_results.items():
+            status = "✓" if result else "✗"
+            print(f"  {status} {pass_name}")
 
-if __name__ == "__main__":
-    main()
+if __name__ == '__main__':
+    demo_allreduce()

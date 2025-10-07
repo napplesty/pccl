@@ -109,6 +109,7 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
 
     m.def("executeGraph", &executeGraph, 
           py::arg("graph"), py::arg("participants"),
+          py::arg("input"), py::arg("output"),
           "Execute a primitive graph with the given participants");
 
     m.def("get_global_config", &get_global_config, 

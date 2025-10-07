@@ -1,9 +1,22 @@
 #include "runtime/communicator/channel.h"
+#include "plugins/aroce/roce_adapter.h"
+#include "plugins/atcp/tcp_adapter.h"
 #include "utils/logging.h"
 #include <algorithm>
 #include <cmath>
+#include <string>
 
 namespace pccl::communicator {
+
+static constexpr std::string RDMA_CHANNEL_KEY = "RDMA";
+static constexpr std::string RDMA_QP_NUM = "RDMA_QP_NUM";
+static constexpr std::string RDMA_GID = "RDMA_GID";
+static constexpr std::string RDMA_CHANNEL_KEY = "RDMA";
+static constexpr std::string RDMA_CHANNEL_KEY = "RDMA";
+
+static std::vector<ChannelType> get_shared_channel_type(Endpoint node0, Endpoint Node1) {
+
+}
 
 bool Endpoint::operator==(const Endpoint& other) const {
   return attributes_ == other.attributes_;
@@ -37,25 +50,10 @@ Endpoint Endpoint::fromJson(const nlohmann::json& j) {
 }
 
 float NetMetrics::effectiveBandwidth(size_t data_size) const {
-  if (data_size == 0) return 0.0f;
-  
-  float fragmentation_penalty = 1.0f;
-  if (best_frag_ > 0 && data_size > best_frag_) {
-    int num_fragments = (data_size + best_frag_ - 1) / best_frag_;
-    fragmentation_penalty = 1.0f - (0.1f * (num_fragments - 1));
+  if (data_size == 0) {
+    return 0;
   }
-  
-  float loss_penalty = 1.0f - loss_rate_;
-  return bandwidth_ * fragmentation_penalty * loss_penalty;
-}
-
-float NetMetrics::scoreForDataSize(size_t data_size) const {
-  if (data_size == 0) return 0.0f;
-  
-  float effective_bw = effectiveBandwidth(data_size);
-  float latency_penalty = 1.0f / (1.0f + (latency_ / 1000.0f));
-  
-  return effective_bw * latency_penalty;
+  return (float)data_size / ((float)data_size / bandwidth_ + latency_);
 }
 
 nlohmann::json OobMessage::toJson() const {
@@ -84,8 +82,8 @@ OobMessage OobMessage::fromJson(const nlohmann::json& j) {
 }
 
 std::unique_ptr<CommEngine> CommEngine::create(ChannelType type,
-                                            const Endpoint& local_endpoint,
-                                            const Endpoint& remote_endpoint) {
+                                               const Endpoint& local_endpoint,
+                                               const Endpoint& remote_endpoint) {
   return nullptr;
 }
 
@@ -102,8 +100,10 @@ bool CommunicationChannel::initialize() {
     PCCL_LOG_WARN("Channel already initialized");
     return false;
   }
+  bool connected = false;
   
-  state_ = ConnectionState::CONNECTING;
+  
+  state_ = ConnectionState::CONNECTED;
   PCCL_LOG_INFO("Communication channel initializing");
   return true;
 }

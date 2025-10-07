@@ -1,8 +1,13 @@
 #include "runtime/api/runtime.h"
+#include "c10/cuda/CUDAStream.h"
 #include "runtime/api/configs.h"
+#include "runtime/communicator/channel.h"
+#include "runtime/communicator/oob_comm.h"
 #include "runtime/engine/memory_manager.h"
 #include "runtime/engine/graph_executor.h"
 #include "utils/logging.h"
+#include <torch/torch.h>
+#include <ATen/cuda/CUDAContext.h>
 #include <memory>
 
 namespace pccl::runtime {
@@ -18,8 +23,10 @@ std::shared_ptr<PcclConfig> get_global_config() {
 bool initializeRuntime(const RuntimeConfig& config) {
   try {
     global_config = std::make_shared<PcclConfig>();
+    global_config->executor_stream = c10::cuda::getCurrentCUDAStream();
     
     engine::DistributedMemoryConfig mem_config;
+
     mem_config.local_rank = config.local_rank;
     mem_config.world_size = config.world_size;
     mem_config.buffers_per_executor = config.buffers_per_executor;
@@ -27,6 +34,7 @@ bool initializeRuntime(const RuntimeConfig& config) {
     mem_config.extra_config = config.extra_config;
     
     memory_manager = std::make_unique<engine::MemoryManager>();
+
     if (!memory_manager->initialize(mem_config)) {
       PCCL_LOG_ERROR("Failed to initialize memory manager");
       return false;
@@ -40,9 +48,11 @@ bool initializeRuntime(const RuntimeConfig& config) {
     PCCL_LOG_ERROR("Runtime initialization failed: {}", e.what());
     return false;
   }
+
 }
 
 void shutdownRuntime() {
+
   if (graph_executor) {
     graph_executor->stop();
     graph_executor->wait();
@@ -59,7 +69,7 @@ void shutdownRuntime() {
   PCCL_LOG_INFO("Runtime shutdown completed");
 }
 
-bool executeGraph(const PrimitiveGrpah& graph, std::vector<int> &participants) {
+bool executeGraph(const PrimitiveGrpah& graph, std::vector<int> &participants, torch::Tensor &input, torch::Tensor &output) {
   if (!memory_manager || !graph_executor) {
     PCCL_LOG_ERROR("Runtime not initialized");
     return false;
@@ -77,7 +87,7 @@ bool executeGraph(const PrimitiveGrpah& graph, std::vector<int> &participants) {
     
     engine::GraphBufferLayout layout;
     layout.num_operators = operators.size();
-    layout.num_queues = executors.size() * 2;
+    layout.num_queues = executors.size() * (executors.size() - 1);
     
     if (!graph_executor->initialize(&layout, executor_config)) {
       PCCL_LOG_ERROR("Failed to initialize graph executor");
