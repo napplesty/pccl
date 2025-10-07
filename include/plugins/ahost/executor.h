@@ -13,6 +13,7 @@ public:
   ~HostExecutorManager();
   bool initialize();
   void launch();
+  void wait();
 private:
   GraphBufferLayout* graph_layout_;
   int num_threads_;
