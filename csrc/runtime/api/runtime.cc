@@ -12,6 +12,7 @@
 #include <cstring>
 #include <format>
 #include <infiniband/verbs.h>
+#include <memory>
 #include <thread>
 #include <chrono>
 #include <ifaddrs.h>
@@ -21,8 +22,8 @@
 namespace pccl::runtime {
 
 static std::unique_ptr<communicator::AsioOobChannel> oob_channel = nullptr;
-static std::unique_ptr<engine::MemoryManager> memory_manager = nullptr;
-static std::unique_ptr<communicator::ChannelManager> channel_manager = nullptr;
+static std::shared_ptr<engine::MemoryManager> memory_manager = nullptr;
+static std::shared_ptr<communicator::ChannelManager> channel_manager = nullptr;
 static std::unique_ptr<engine::GraphExecutor> graph_executor = nullptr;
 static std::map<int, RuntimeConfig> cluster_configs;
 static int current_rank = -1;
@@ -280,7 +281,7 @@ bool initializeRuntime(std::vector<RuntimeConfig>& runtime_configs, int rank, in
   }
   PCCL_LOG_DEBUG("OOB communication initialized");
 
-  memory_manager = std::make_unique<engine::MemoryManager>();
+  memory_manager = std::make_shared<engine::MemoryManager>();
   
   if (!memory_manager->initialize(self_config)) {
     PCCL_LOG_ERROR("Failed to initialize memory manager");
@@ -302,7 +303,7 @@ bool initializeRuntime(std::vector<RuntimeConfig>& runtime_configs, int rank, in
 
   self_config.endpoint_configs["pccl.runtime.initialized"] = "true";
 
-  channel_manager = std::make_unique<communicator::ChannelManager>();
+  channel_manager = std::make_shared<communicator::ChannelManager>();
 
   bool use_tcp = self_config.endpoint_configs.count("pccl.runtime.use_tcp") > 0 &&
                   self_config.endpoint_configs.at("pccl.runtime.use_tcp") == "true";
@@ -472,7 +473,73 @@ void shutdownRuntime() {
 bool executeGraph(PrimitiveGrpah& graph, 
                  std::vector<int>& participants, 
                  torch::Tensor& input, torch::Tensor& output) {
-  return false;
+  
+  if (!memory_manager || !channel_manager) {
+    PCCL_LOG_ERROR("Runtime not initialized");
+    return false;
+  }
+  if (participants.empty()) {
+    PCCL_LOG_ERROR("No participants specified for graph execution");
+    return false;
+  }
+  // 检查当前rank是否在参与者中
+  bool is_participant = false;
+  for (int rank : participants) {
+    if (rank == current_rank) {
+      is_participant = true;
+      break;
+    }
+  }
+  if (!is_participant) {
+    PCCL_LOG_INFO("Current rank {} is not in participants, skipping execution", current_rank);
+    return true;
+  }
+  PCCL_LOG_INFO("Executing graph with {} participants", participants.size());
+  try {
+    uint64_t operator_id = generateOperatorId();
+    std::map<runtime::ExecutorType, size_t> buffer_requirements;
+    auto buffers = graph.getBuffers();
+    for (const auto& buffer : buffers) {
+      buffer_requirements[buffer.executor_type] = buffer.size;
+    }
+    if (buffer_requirements.empty()) {
+      buffer_requirements[runtime::ExecutorType::CPU] = 1024 * 1024; // 1MB
+      if (graph.getExecutors().size() > 0) {
+        for (auto exec_type : graph.getExecutors()) {
+          if (exec_type == runtime::ExecutorType::CUDA) {
+            buffer_requirements[runtime::ExecutorType::CUDA] = 1024 * 1024; // 1MB
+            break;
+          }
+        }
+      }
+    }
+    engine::WorkspaceHandle workspace_handle = 
+        memory_manager->get_workspace_for_operator(operator_id, participants, buffer_requirements);
+    
+    if (workspace_handle.buffers.empty()) {
+      PCCL_LOG_ERROR("Failed to create workspace for operator {}", operator_id);
+      return false;
+    }
+    std::map<ExecutorType, int> executor_config = getExecutorConfig(graph);
+    engine::GraphExecutor graph_executor;
+    if (!graph_executor.initialize(graph, workspace_handle, executor_config, channel_manager, memory_manager)) {
+      PCCL_LOG_ERROR("Failed to initialize graph executor");
+      memory_manager->deallocate_workspace(workspace_handle);
+      return false;
+    }
+    PCCL_LOG_INFO("Graph executor initialized successfully");
+    if (!memory_manager->post_sync_workspace(workspace_handle)) {
+      PCCL_LOG_WARN("Workspace synchronization failed, continuing anyway");
+    }
+    graph_executor.issue();
+    graph_executor.wait();
+    memory_manager->deallocate_workspace(workspace_handle);
+    PCCL_LOG_INFO("Graph execution completed successfully");
+    return true;
+  } catch (const std::exception& e) {
+    PCCL_LOG_ERROR("Graph execution failed: {}", e.what());
+    return false;
+  }
 }
 
 uint64_t generateOperatorId() {
