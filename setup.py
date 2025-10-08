@@ -75,10 +75,10 @@ cuda_flags = ['-std=c++20',
              ]
 
 data_include_dirs = [
-    f'{current_dir}/thirdparty/cutlass/include/cute',
-    f'{current_dir}/thirdparty/cutlass/include/cutlass',
-    f'{current_dir}/thirdparty/composable_kernel/include/ck',
-    f'{current_dir}/thirdparty/composable_kernel/include/ck_tile',
+    # f'{current_dir}/thirdparty/cutlass/include/cute',
+    # f'{current_dir}/thirdparty/cutlass/include/cutlass',
+    # f'{current_dir}/thirdparty/composable_kernel/include/ck',
+    # f'{current_dir}/thirdparty/composable_kernel/include/ck_tile',
 ]
 
 class CustomBuildPy(build_py):
@@ -130,7 +130,8 @@ if __name__ == '__main__':
                          include_dirs=build_include_dirs,
                          libraries=build_libraries,
                          library_dirs=build_library_dirs,
-                         extra_compile_args={'cxx': cxx_flags, 'cuda': cuda_flags})
+                         extra_compile_args={'cxx': cxx_flags, 'cuda': cuda_flags},
+                         extra_link_args=['-static-libstdc++'])
         ],
         install_requires=[
             'scipy>=1.15.0',     

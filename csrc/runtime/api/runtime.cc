@@ -7,6 +7,8 @@
 #include "plugins/aroce/roce_adapter.h"
 #include "plugins/aroce/roce_utils.h"
 #include "utils/logging.h"
+#include "utils/hex_utils.hpp"
+#include "utils/debug.hpp"
 #include <cstring>
 #include <format>
 #include <infiniband/verbs.h>
@@ -124,26 +126,26 @@ private:
 };
 
 void registerCommunicationResources(RuntimeConfig& config) {
-  auto& verbs_lib = pccl::communicator::VerbsLib::getInstance();
-  verbs_lib.load("libibverbs.so");
-  int num_devices;
-  auto devices = verbs_lib.getDeviceList(&num_devices);
-  for (int idx = 0; idx < num_devices; idx ++) {
-    auto context = verbs_lib.openDevice(devices[0]);
-    if (context && verbs_lib.getDeviceName(devices[idx]) == config.endpoint_configs["pccl.roce.device_name"]) {
-      ibv_gid self_gid;
-      int port_num = std::stoi(config.endpoint_configs["pccl.roce.port_num"]);
-      int gid_index = std::stoi(config.endpoint_configs["pccl.roce.gid_index"]);
-      verbs_lib.queryGid(context, port_num, gid_index, &self_gid);
-      char tmp[sizeof(self_gid) + 1];
-      memcpy(tmp, (void *)&self_gid, sizeof(tmp));
-      config.endpoint_configs["pccl.roce.gid"] = tmp;
+  if (config.endpoint_configs.at("pccl.runtime.use_roce") == "true") {
+    auto& verbs_lib = pccl::communicator::VerbsLib::getInstance();
+    verbs_lib.load("libibverbs.so");
+    int num_devices;
+    auto devices = verbs_lib.getDeviceList(&num_devices);
+    for (int idx = 0; idx < num_devices; idx ++) {
+      auto context = verbs_lib.openDevice(devices[idx]);
+      if (context && verbs_lib.getDeviceName(devices[idx]) == config.endpoint_configs.at("pccl.roce.device_name")) {
+        ibv_gid self_gid;
+        int port_num = std::stoi(config.endpoint_configs["pccl.roce.port_num"]);
+        int gid_index = std::stoi(config.endpoint_configs["pccl.roce.gid_index"]);
+        verbs_lib.queryGid(context, port_num, gid_index, &self_gid);
+        config.endpoint_configs["pccl.roce.gid"] = utils::marshal_to_hex_str((void *)&self_gid, sizeof(self_gid));
+        verbs_lib.closeDevice(context);
+        break;
+      }
       verbs_lib.closeDevice(context);
-      break;
     }
-    verbs_lib.closeDevice(context);
+    verbs_lib.freeDeviceList(devices);
   }
-  verbs_lib.freeDeviceList(devices);
 }
 
 std::string RuntimeConfig::toJson() {
@@ -251,116 +253,118 @@ bool initializeRuntime(std::vector<RuntimeConfig>& runtime_configs, int rank, in
   bool use_roce = self_config.endpoint_configs.count("pccl.runtime.use_roce") > 0 &&
                   self_config.endpoint_configs.at("pccl.runtime.use_roce") == "true";
 
-  // if (use_tcp) {
-  //   channel_manager->registerEngineFactory(communicator::ChannelType::TCP,
-  //     [](const communicator::Endpoint& local, const communicator::Endpoint& remote) {
-  //       return std::make_unique<communicator::TCPAdapter>(local, remote);
-  //     });
-  //   PCCL_LOG_DEBUG("Registered TCP engine factory");
-  // }
+  if (use_tcp) {
+    channel_manager->registerEngineFactory(communicator::ChannelType::TCP,
+      [](const communicator::Endpoint& local, const communicator::Endpoint& remote) {
+        return std::make_unique<communicator::TCPAdapter>(local, remote);
+      });
+    PCCL_LOG_DEBUG("Registered TCP engine factory");
+  }
   
-  // if (use_roce) {
-  //   channel_manager->registerEngineFactory(communicator::ChannelType::RDMA,
-  //     [](const communicator::Endpoint& local, const communicator::Endpoint& remote) {
-  //       return std::make_unique<communicator::RoCEAdapter>(local, remote);
-  //     });
-  //   PCCL_LOG_DEBUG("Registered RoCE engine factory");
-  // }
+  if (use_roce) {
+    channel_manager->registerEngineFactory(communicator::ChannelType::RDMA,
+      [](const communicator::Endpoint& local, const communicator::Endpoint& remote) {
+        return std::make_unique<communicator::RoCEAdapter>(local, remote);
+      });
+    PCCL_LOG_DEBUG("Registered RoCE engine factory");
+  }
 
-  // if (!channel_manager->initialize(self_endpoint)) {
-  //   PCCL_LOG_ERROR("Failed to initialize channel manager");
-  //   return false;
-  // }
-  // PCCL_LOG_DEBUG("Channel manager initialized");
+  if (!channel_manager->initialize(self_endpoint)) {
+    PCCL_LOG_ERROR("Failed to initialize channel manager");
+    return false;
+  }
+  PCCL_LOG_DEBUG("Channel manager initialized");
 
-  // self_config.endpoint_configs["pccl.channel.initialized"] = "true";
+  self_config.endpoint_configs["pccl.channel.initialized"] = "true";
 
-  // std::atomic<int> configs_received = 1;
-  // std::mutex config_mutex;
-  // std::condition_variable config_cv;
+  std::atomic<int> configs_received = 1;
+  std::mutex config_mutex;
+  std::condition_variable config_cv;
   
-  // auto config_handler = [&](const communicator::OobMessage& msg) {
-  //   if (msg.src_rank == rank) return;
+  auto config_handler = [&](const communicator::OobMessage& msg) {
+    if (msg.src_rank == rank) return;
     
-  //   try {
-  //     RuntimeConfig peer_config = RuntimeConfig::fromJson(msg.payload);
-  //     {
-  //       std::lock_guard<std::mutex> lock(config_mutex);
-  //       cluster_configs[msg.src_rank] = peer_config;
-  //       int received = ++configs_received;
-  //       PCCL_LOG_DEBUG("Received config from rank {}, total received: {}", 
-  //                     msg.src_rank, received);
+    try {
+      RuntimeConfig peer_config = RuntimeConfig::fromJson(msg.payload);
+      {
+        std::lock_guard<std::mutex> lock(config_mutex);
+        cluster_configs[msg.src_rank].endpoint_configs.insert(peer_config.endpoint_configs.begin(), peer_config.endpoint_configs.end());
+        int received = ++configs_received;
+        PCCL_LOG_DEBUG("Received config from rank {}, total received: {}", 
+                      msg.src_rank, received);
         
-  //       if (received == world_size) {
-  //         config_cv.notify_all();
-  //       }
-  //     }
-  //   } catch (const std::exception& e) {
-  //     PCCL_LOG_ERROR("Failed to process config from rank {}: {}", msg.src_rank, e.what());
-  //   }
-  // };
+        if (received == world_size) {
+          config_cv.notify_all();
+        }
+      }
+    } catch (const std::exception& e) {
+      PCCL_LOG_ERROR("Failed to process config from rank {}: {}", msg.src_rank, e.what());
+    }
+  };
   
-  // oob_channel->registerHandler(communicator::OobMsgType::CONFIG_SYNC, config_handler);
+  oob_channel->registerHandler(communicator::OobMsgType::CONFIG_SYNC, config_handler);
 
-  // communicator::OobMessage sync_msg;
-  // sync_msg.type_ = communicator::OobMsgType::CONFIG_SYNC;
-  // sync_msg.src_rank = rank;
-  // sync_msg.payload = self_config.toJson();
-  // sync_msg.timestamp = std::chrono::duration_cast<std::chrono::milliseconds>(
-  //   std::chrono::system_clock::now().time_since_epoch()).count();
+  communicator::OobMessage sync_msg;
+  sync_msg.type_ = communicator::OobMsgType::CONFIG_SYNC;
+  sync_msg.src_rank = rank;
+  sync_msg.payload = self_config.toJson();
+  sync_msg.timestamp = std::chrono::duration_cast<std::chrono::milliseconds>(
+    std::chrono::system_clock::now().time_since_epoch()).count();
 
-  // std::vector<communicator::Endpoint> peer_endpoints;
-  // for (int i = 0; i < world_size; i++) {
-  //   if (i != rank) {
-  //     communicator::Endpoint peer_endpoint;
-  //     peer_endpoint.attributes_ = &runtime_configs[i].endpoint_configs;
-  //     peer_endpoints.push_back(peer_endpoint);
-  //   }
-  // }
+  std::vector<communicator::Endpoint> peer_endpoints;
+  for (int i = 0; i < world_size; i++) {
+    if (i != rank) {
+      communicator::Endpoint peer_endpoint;
+      peer_endpoint.attributes_ = runtime_configs[i].endpoint_configs;
+      peer_endpoints.push_back(peer_endpoint);
+    }
+  }
 
-  // if (!peer_endpoints.empty() && !oob_channel->broadcast(sync_msg, peer_endpoints)) {
-  //   PCCL_LOG_ERROR("Failed to broadcast configuration to some peers");
-  // }
-  // PCCL_LOG_DEBUG("Configuration broadcasted to {} peers", peer_endpoints.size());
+  if (!peer_endpoints.empty() && !oob_channel->broadcast(sync_msg, peer_endpoints)) {
+    PCCL_LOG_ERROR("Failed to broadcast configuration to some peers");
+  }
+  PCCL_LOG_DEBUG("Configuration broadcasted to {} peers", peer_endpoints.size());
 
-  // std::unique_lock<std::mutex> lock(config_mutex);
-  // if (world_size > 1) {
-  //   auto timeout = std::chrono::steady_clock::now() + std::chrono::seconds(30);
-  //   if (!config_cv.wait_until(lock, timeout, [&]() { return configs_received == world_size; })) {
-  //     PCCL_LOG_ERROR("Configuration synchronization timeout. Received {}/{} configs", 
-  //                   configs_received.load(), world_size);
-  //     return false;
-  //   }
-  // }
-  // PCCL_LOG_INFO("Configuration synchronization completed");
+  std::unique_lock<std::mutex> lock(config_mutex);
+  if (world_size > 1) {
+    auto timeout = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+    if (!config_cv.wait_until(lock, timeout, [&]() { return configs_received == world_size; })) {
+      PCCL_LOG_ERROR("Configuration synchronization timeout. Received {}/{} configs", 
+                    configs_received.load(), world_size);
+      return false;
+    }
+  }
+  PCCL_LOG_INFO("Configuration synchronization completed");
 
-  // auto comm_interface = std::make_shared<RuntimeCommInterface>(channel_manager.get());
-  // memory_manager->setCommInterface(comm_interface);
+  auto comm_interface = std::make_shared<RuntimeCommInterface>(channel_manager.get());
+  memory_manager->setCommInterface(comm_interface);
 
-  // if (!memory_manager->initialize_cluster(cluster_configs)) {
-  //   PCCL_LOG_ERROR("Failed to initialize memory manager cluster");
-  //   return false;
-  // }
-  // PCCL_LOG_DEBUG("Memory manager cluster initialized");
+  if (!memory_manager->initialize_cluster(cluster_configs)) {
+    PCCL_LOG_ERROR("Failed to initialize memory manager cluster");
+    return false;
+  }
+  PCCL_LOG_DEBUG("Memory manager cluster initialized");
 
-  // for (int i = 0; i < world_size; i++) {
-  //   if (i != rank) {
-  //     communicator::Endpoint peer_endpoint;
-  //     peer_endpoint.attributes_ = &cluster_configs[i].endpoint_configs;
+  for (int i = 0; i < world_size; i++) {
+    if (i != rank) {
+      communicator::Endpoint peer_endpoint;
+      peer_endpoint.attributes_ = cluster_configs[i].endpoint_configs;
       
-  //     if (peer_endpoint.attributes_->count("pccl.runtime.initialized") == 0) {
-  //       PCCL_LOG_WARN("Rank {} not initialized, skipping channel creation", i);
-  //       continue;
-  //     }
+      if (peer_endpoint.attributes_.count("pccl.runtime.initialized") == 0) {
+        PCCL_LOG_WARN("Rank {} not initialized, skipping channel creation", i);
+        continue;
+      }
+
+      debug::printMap(peer_endpoint.attributes_);
       
-  //     auto channel = channel_manager->getOrCreateChannel(peer_endpoint);
-  //     if (!channel) {
-  //       PCCL_LOG_WARN("Failed to create channel to rank {}", i);
-  //     } else {
-  //       PCCL_LOG_DEBUG("Channel to rank {} established", i);
-  //     }
-  //   }
-  // }
+      auto channel = channel_manager->getOrCreateChannel(peer_endpoint);
+      if (!channel) {
+        PCCL_LOG_WARN("Failed to create channel to rank {}", i);
+      } else {
+        PCCL_LOG_DEBUG("Channel to rank {} established", i);
+      }
+    }
+  }
 
   // graph_executor = std::make_unique<engine::GraphExecutor>();
   

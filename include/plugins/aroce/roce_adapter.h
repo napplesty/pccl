@@ -3,6 +3,7 @@
 #include <runtime/communicator/channel.h>
 #include <plugins/aroce/roce_utils.h>
 #include <memory>
+#include <unordered_map>
 
 namespace pccl::communicator {
 
@@ -29,20 +30,27 @@ public:
   const Endpoint& getSelfEndpoint() const override;
   const Endpoint& getPeerEndpoint() const override;
 
+  bool registerMemoryRegion(const MemRegion& region) override;
+  bool deregisterMemoryRegion(const MemRegion& region) override;
+
 private:
   ibv_send_wr buildSendWR(const MemRegion& dst, const MemRegion& src);
   ibv_send_wr buildWriteWR(const MemRegion& dst, const MemRegion& src);
   ibv_send_wr buildReadWR(const MemRegion& dst, const MemRegion& src);
   bool waitForCompletion(uint64_t tx_id);
+  uint32_t getLocalKey(void* addr);
+  bool setupVerbsManager();
 
   Endpoint self_endpoint_;
   Endpoint peer_endpoint_;
   std::unique_ptr<pccl::communicator::VerbsManager> verbs_manager_;
+  std::shared_ptr<pccl::communicator::VerbsProtectionDomain> pd_;
   pccl::communicator::VerbsManager::ConnectionId conn_id_{0};
   pccl::communicator::VerbsManager::QPId qp_id_{0};
   std::atomic<uint64_t> next_tx_id_{1};
-  std::unordered_map<uint64_t, bool> completion_map_;
-  std::mutex completion_mutex_;
+  
+  std::unordered_map<void*, std::shared_ptr<pccl::communicator::VerbsMemoryRegion>> registered_regions_;
+  std::mutex regions_mutex_;
 };
 
 } // namespace pccl::communicator

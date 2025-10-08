@@ -1,6 +1,6 @@
 #include "plugins/atcp/tcp_adapter.h"
 #include "plugins/atcp/tcp_utils.h"
-#include "utils/logging.h"
+#include "utils/allocator.h"
 #include <cstring>
 
 namespace pccl::communicator {
@@ -21,7 +21,6 @@ bool TCPAdapter::connect(const Endpoint& self, const Endpoint& peer) {
     uint16_t remote_port = std::stoi(peer.attributes_.at("pccl.tcp.remote_port"));
     
     if (!tcp_manager_->initialize(local_ip, "pccl_token")) {
-      PCCL_LOG_ERROR("Failed to initialize TCP manager");
       return false;
     }
     
@@ -30,35 +29,28 @@ bool TCPAdapter::connect(const Endpoint& self, const Endpoint& peer) {
     
     conn_id_ = tcp_manager_->createConnection();
     if (conn_id_ == 0) {
-      PCCL_LOG_ERROR("Failed to create TCP connection");
       return false;
     }
     
     qp_id_ = tcp_manager_->createQP(conn_id_);
     if (qp_id_ == 0) {
-      PCCL_LOG_ERROR("Failed to create TCP QP");
       return false;
     }
     
     if (!tcp_manager_->modifyQPToInit(conn_id_, qp_id_)) {
-      PCCL_LOG_ERROR("Failed to modify QP to INIT");
       return false;
     }
     
     if (!tcp_manager_->modifyQPToRTR(conn_id_, qp_id_, remote_gid)) {
-      PCCL_LOG_ERROR("Failed to modify QP to RTR");
       return false;
     }
     
     if (!tcp_manager_->modifyQPToRTS(conn_id_, qp_id_)) {
-      PCCL_LOG_ERROR("Failed to modify QP to RTS");
       return false;
     }
     
-    PCCL_LOG_INFO("TCP adapter connected successfully");
     return true;
   } catch (const std::exception& e) {
-    PCCL_LOG_ERROR("TCP connection failed: {}", e.what());
     return false;
   }
 }
@@ -69,21 +61,42 @@ void TCPAdapter::disconnect() {
     conn_id_ = 0;
     qp_id_ = 0;
   }
+  
+  std::lock_guard<std::mutex> lock(regions_mutex_);
+  registered_regions_.clear();
+  
+  std::lock_guard<std::mutex> tx_lock(transactions_mutex_);
+  transactions_.clear();
 }
 
 uint64_t TCPAdapter::prepSend(const MemRegion& dst, const MemRegion& src) {
   if (!connected()) {
-    PCCL_LOG_ERROR("TCP adapter not connected");
+    return 0;
+  }
+  
+  uint64_t tx_id = next_tx_id_.fetch_add(1);
+  
+  TCPTransaction transaction;
+  transaction.id = tx_id;
+  transaction.src = src;
+  transaction.dst = dst;
+  transaction.completed = false;
+  
+  if (!prepareDataForTransfer(src, transaction.staging_buffer)) {
     return 0;
   }
   
   auto wr = buildSendWR(dst, src);
   if (!tcp_manager_->postSend(conn_id_, qp_id_, &wr)) {
-    PCCL_LOG_ERROR("Failed to post TCP send");
     return 0;
   }
   
-  return next_tx_id_.fetch_add(1);
+  {
+    std::lock_guard<std::mutex> lock(transactions_mutex_);
+    transactions_[tx_id] = transaction;
+  }
+  
+  return tx_id;
 }
 
 void TCPAdapter::postSend() {
@@ -108,18 +121,44 @@ bool TCPAdapter::waitTx(uint64_t tx_id) {
   while (retries < max_retries) {
     int count = tcp_manager_->pollCQ(conn_id_, 1, &wc);
     if (count > 0) {
+      if (wc.status == pccl::TcpWCStatus::Success) {
+        std::lock_guard<std::mutex> lock(transactions_mutex_);
+        auto it = transactions_.find(tx_id);
+        if (it != transactions_.end()) {
+          if (transferDataToDestination(it->second.dst, it->second.staging_buffer)) {
+            it->second.completed = true;
+            return true;
+          }
+        }
+      }
+      return false;
+    }
+    std::this_thread::sleep_for(std::chrono::microseconds(10));
+    retries++;
+  }
+  
+  return false;
+}
+
+bool TCPAdapter::flush() {
+  if (!connected()) {
+    return false;
+  }
+  
+  pccl::TcpWC wc;
+  int retries = 0;
+  const int max_retries = 1000;
+  
+  while (retries < max_retries) {
+    int count = tcp_manager_->pollCQ(conn_id_, 1, &wc);
+    if (count > 0) {
       return wc.status == pccl::TcpWCStatus::Success;
     }
     std::this_thread::sleep_for(std::chrono::microseconds(10));
     retries++;
   }
   
-  PCCL_LOG_ERROR("TCP transaction timeout");
   return false;
-}
-
-bool TCPAdapter::flush() {
-  return true;
 }
 
 bool TCPAdapter::connected() const {
@@ -145,12 +184,47 @@ const Endpoint& TCPAdapter::getPeerEndpoint() const {
   return peer_endpoint_;
 }
 
+bool TCPAdapter::registerMemoryRegion(const MemRegion& region) {
+  std::lock_guard<std::mutex> lock(regions_mutex_);
+  
+  TCPMemoryRegion tcp_region;
+  tcp_region.addr = region.ptr_;
+  tcp_region.length = region.size_;
+  tcp_region.lkey = next_key_.fetch_add(1);
+  tcp_region.rkey = next_key_.fetch_add(1);
+  tcp_region.executor_type = runtime::ExecutorType::CPU;
+  
+  registered_regions_[region.ptr_] = tcp_region;
+  
+  return true;
+}
+
+bool TCPAdapter::deregisterMemoryRegion(const MemRegion& region) {
+  std::lock_guard<std::mutex> lock(regions_mutex_);
+  
+  auto it = registered_regions_.find(region.ptr_);
+  if (it != registered_regions_.end()) {
+    registered_regions_.erase(it);
+    return true;
+  }
+  
+  return false;
+}
+
 pccl::TcpSendWR TCPAdapter::buildSendWR(const MemRegion& dst, const MemRegion& src) {
   pccl::TcpSendWR wr;
   auto sge = new pccl::TcpSGE[1];
+  
+  std::lock_guard<std::mutex> lock(regions_mutex_);
+  auto it = registered_regions_.find(src.ptr_);
+  if (it != registered_regions_.end()) {
+    sge[0].lkey = it->second.lkey;
+  } else {
+    sge[0].lkey = 0;
+  }
+  
   sge[0].addr = src.ptr_;
   sge[0].length = src.size_;
-  sge[0].lkey = 0;
   
   wr.sg_list = sge;
   wr.num_sge = 1;
@@ -159,44 +233,48 @@ pccl::TcpSendWR TCPAdapter::buildSendWR(const MemRegion& dst, const MemRegion& s
   return wr;
 }
 
-pccl::TcpWriteWR TCPAdapter::buildWriteWR(const MemRegion& dst, const MemRegion& src) {
-  pccl::TcpWriteWR wr;
-  auto sge = new pccl::TcpSGE[1];
-  sge[0].addr = src.ptr_;
-  sge[0].length = src.size_;
-  sge[0].lkey = 0;
+bool TCPAdapter::prepareDataForTransfer(const MemRegion& src, std::vector<char>& staging_buffer) {
+  runtime::ExecutorType src_executor_type = runtime::ExecutorType::CPU;
   
-  wr.sg_list = sge;
-  wr.num_sge = 1;
-  wr.next = nullptr;
+  std::lock_guard<std::mutex> lock(regions_mutex_);
+  auto it = registered_regions_.find(src.ptr_);
+  if (it != registered_regions_.end()) {
+    src_executor_type = it->second.executor_type;
+  }
   
-  pccl::TcpRemoteMRMetadata remote_mr;
-  remote_mr.remote_gid = peer_endpoint_.attributes_.at("pccl.remote.gid");
-  remote_mr.remote_addr = reinterpret_cast<uint64_t>(dst.ptr_);
-  remote_mr.remote_rkey = std::stoul(peer_endpoint_.attributes_.at("pccl.remote.rkey"));
-  wr.remote_mr = remote_mr;
+  if (src_executor_type == runtime::ExecutorType::CPU) {
+    return true;
+  }
   
-  return wr;
+  staging_buffer.resize(src.size_);
+  
+  return utils::generic_memcpy(src_executor_type, runtime::ExecutorType::CPU, 
+                              src.ptr_, staging_buffer.data(), src.size_);
 }
 
-pccl::TcpReadWR TCPAdapter::buildReadWR(const MemRegion& dst, const MemRegion& src) {
-  pccl::TcpReadWR wr;
-  auto sge = new pccl::TcpSGE[1];
-  sge[0].addr = dst.ptr_;
-  sge[0].length = dst.size_;
-  sge[0].lkey = 0;
+bool TCPAdapter::transferDataToDestination(const MemRegion& dst, const std::vector<char>& staging_buffer) {
+  runtime::ExecutorType dst_executor_type = runtime::ExecutorType::CPU;
   
-  wr.sg_list = sge;
-  wr.num_sge = 1;
-  wr.next = nullptr;
+  std::lock_guard<std::mutex> lock(regions_mutex_);
+  auto it = registered_regions_.find(dst.ptr_);
+  if (it != registered_regions_.end()) {
+    dst_executor_type = it->second.executor_type;
+  }
   
-  pccl::TcpRemoteMRMetadata remote_mr;
-  remote_mr.remote_gid = peer_endpoint_.attributes_.at("pccl.remote.gid");
-  remote_mr.remote_addr = reinterpret_cast<uint64_t>(src.ptr_);
-  remote_mr.remote_rkey = std::stoul(peer_endpoint_.attributes_.at("pccl.remote.rkey"));
-  wr.remote_mr = remote_mr;
+  if (dst_executor_type == runtime::ExecutorType::CPU) {
+    if (!staging_buffer.empty()) {
+      memcpy(dst.ptr_, staging_buffer.data(), dst.size_);
+    }
+    return true;
+  }
   
-  return wr;
+  if (staging_buffer.empty()) {
+    return true;
+  } else {
+    void *buffer_ptr = const_cast<char *>(staging_buffer.data());
+    return utils::generic_memcpy(runtime::ExecutorType::CPU, dst_executor_type, 
+                                 buffer_ptr, dst.ptr_, dst.size_);
+  }
 }
 
-} // namespace pccl::communicator
+}

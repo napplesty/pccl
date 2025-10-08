@@ -182,10 +182,13 @@ void AsioOobChannel::processMessage(const std::vector<char>& data) {
       message_queue_.push(msg);
     }
     
-    std::shared_lock lock(handlers_mutex_);
-    auto it = handlers_.find(msg.type_);
-    if (it != handlers_.end()) {
-      it->second(msg);
+    while (true) {
+      std::shared_lock lock(handlers_mutex_);
+      auto it = handlers_.find(msg.type_);
+      if (it != handlers_.end()) {
+        it->second(msg);
+        break;
+      }
     }
     
     if (msg.type_ == OobMsgType::CONFIG_SYNC) {

@@ -13,6 +13,7 @@ namespace pccl::engine {
 
 class GlobalBufferID {
 public:
+  void *ipc_addr = nullptr;
   void* addr;
   uint64_t value;
   std::map<std::string, std::string> shareable_handles;

@@ -47,11 +47,19 @@ class RuntimeTester:
                     cccl.ExecutorType.CUDA: 1024 * 1024   # 1MB for CUDA
                 },
                 "endpoint_configs": {
+                    "pccl.runtime.rank": str(i),
+                    "pccl.runtime.world_size": str(self.world_size),
+                    "pccl.oob.ip": "29.119.98.121",
+                    "pccl.oob.port": str(31250 + i),
+                    "pccl.runtime.host_sign": str("oxksk"),
+                    "pccl.runtime.use_roce": "true",
+                    "pccl.roce.port_num": "1",
+                    "pccl.roce.gid_index": "3",
+                    "pccl.roce.lid": "0",
+                    "pccl.roce.device_name": f"mlx5_bond_{i+1}",
                     "pccl.runtime.use_tcp": "true",
                     "pccl.tcp.local_ip": "127.0.0.1",
-                    "pccl.tcp.local_port": str(12345 + i),
-                    "pccl.runtime.rank": str(i),
-                    "pccl.runtime.world_size": str(self.world_size)
+                    "pccl.tcp.local_port": str(31280 + i),
                 }
             }
             configs.append(config)
@@ -199,9 +207,6 @@ class RuntimeTester:
 
 
 def setup_distributed(rank: int, world_size: int):
-    """设置分布式环境"""
-    os.environ['MASTER_ADDR'] = 'localhost'
-    os.environ['MASTER_PORT'] = '12355'
     
     # 初始化进程组
     dist.init_process_group("gloo", rank=rank, world_size=world_size)
@@ -218,11 +223,11 @@ def run_test(rank: int, world_size: int):
     try:
         # 设置分布式环境
         setup_distributed(rank, world_size)
-        
+        print("setuped")
         # 创建测试器并运行测试
         tester = RuntimeTester(rank, world_size)
         success = tester.run_all_tests()
-        
+        print("tested ok")
         # 清理分布式环境
         cleanup_distributed()
         

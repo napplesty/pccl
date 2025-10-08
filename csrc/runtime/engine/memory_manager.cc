@@ -1,4 +1,5 @@
 #include "runtime/engine/memory_manager.h"
+#include "runtime/api/repr.h"
 #include "utils/allocator.h"
 #include "utils/exception.hpp"
 #include "utils/logging.h"
@@ -66,8 +67,6 @@ bool MemoryManager::initialize(runtime::RuntimeConfig& runtime_config) {
         if (executor_type.first == runtime::ExecutorType::CUDA) {
           gid.shareable_handles["cuda_ipc_handle"] = 
             utils::get_shareable_handle(executor_type.first, ptr);
-        } else if (executor_type.first == runtime::ExecutorType::CPU) {
-          gid.shareable_handles["shmem_key"] = generateShmemKey(ptr);
         }
         
         global_buffers_[self_rank_].push_back(gid);
@@ -121,6 +120,11 @@ bool MemoryManager::initialize_cluster(const std::map<int, runtime::RuntimeConfi
           try {
             nlohmann::json buffer_json = nlohmann::json::parse(value);
             GlobalBufferID remote_buffer = GlobalBufferID::fromJson(buffer_json);
+            if (host_sign_ == config.endpoint_configs.at("pccl.runtime.host_sign") &&
+                remote_buffer.getExecutorType() == runtime::ExecutorType::CUDA) {
+              remote_buffer.ipc_addr = utils::from_shareable(runtime::ExecutorType::CUDA, remote_buffer.shareable_handles.at("cuda_ipc_handle"));
+              PCCL_LOG_DEBUG("Registered cuda ipc buffer: rank={}, idx={}, ipc_ptr={}, raddr={}", remote_buffer.getRank(), remote_buffer.getBufferIdx(), remote_buffer.ipc_addr, remote_buffer.addr);
+            }
             
             if (registerRemoteBuffer(remote_buffer)) {
               PCCL_LOG_DEBUG("Registered remote buffer: rank={}, type={}, idx={}", 
@@ -190,8 +194,8 @@ void MemoryManager::shutdown() {
   
   for (auto& [rank, buffers] : global_buffers_) {
     for (auto& buffer : buffers) {
-      if (buffer.addr) {
-        utils::close_shareable_handle(buffer.getExecutorType(), buffer.addr);
+      if (buffer.ipc_addr) {
+        utils::close_shareable_handle(buffer.getExecutorType(), buffer.ipc_addr);
       }
     }
   }
