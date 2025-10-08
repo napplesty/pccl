@@ -27,6 +27,7 @@ static std::unique_ptr<engine::GraphExecutor> graph_executor = nullptr;
 static std::map<int, RuntimeConfig> cluster_configs;
 static int current_rank = -1;
 static int world_size = 0;
+static std::unique_ptr<pccl::communicator::VerbsManager> global_verbs_manager = nullptr;
 
 class RuntimeCommInterface : public engine::MemoryManagerCommInterface {
 public:
@@ -129,22 +130,76 @@ void registerCommunicationResources(RuntimeConfig& config) {
   if (config.endpoint_configs.at("pccl.runtime.use_roce") == "true") {
     auto& verbs_lib = pccl::communicator::VerbsLib::getInstance();
     verbs_lib.load("libibverbs.so");
-    int num_devices;
-    auto devices = verbs_lib.getDeviceList(&num_devices);
-    for (int idx = 0; idx < num_devices; idx ++) {
-      auto context = verbs_lib.openDevice(devices[idx]);
-      if (context && verbs_lib.getDeviceName(devices[idx]) == config.endpoint_configs.at("pccl.roce.device_name")) {
-        ibv_gid self_gid;
-        int port_num = std::stoi(config.endpoint_configs["pccl.roce.port_num"]);
-        int gid_index = std::stoi(config.endpoint_configs["pccl.roce.gid_index"]);
-        verbs_lib.queryGid(context, port_num, gid_index, &self_gid);
-        config.endpoint_configs["pccl.roce.gid"] = utils::marshal_to_hex_str((void *)&self_gid, sizeof(self_gid));
-        verbs_lib.closeDevice(context);
-        break;
-      }
-      verbs_lib.closeDevice(context);
+    
+    std::string device_name = config.endpoint_configs["pccl.roce.device_name"];
+    uint8_t port_num = std::stoi(config.endpoint_configs["pccl.roce.port_num"]);
+    
+    global_verbs_manager = std::make_unique<pccl::communicator::VerbsManager>();
+    if (!global_verbs_manager->initialize(device_name, port_num)) {
+      PCCL_LOG_ERROR("Failed to initialize Verbs manager for QP precreation");
+      return;
     }
-    verbs_lib.freeDeviceList(devices);
+    
+    int port_num_val = std::stoi(config.endpoint_configs["pccl.roce.port_num"]);
+    int gid_index = std::stoi(config.endpoint_configs["pccl.roce.gid_index"]);
+    
+    ibv_gid self_gid;
+    auto context = global_verbs_manager->getContext();
+    if (context) {
+      verbs_lib.queryGid(context->get(), port_num_val, gid_index, &self_gid);
+      config.endpoint_configs["pccl.roce.gid"] = utils::marshal_to_hex_str((void *)&self_gid, sizeof(self_gid));
+    } else {
+      PCCL_LOG_ERROR("Failed to get context for GID query");
+      return;
+    }
+    
+    pccl::communicator::VerbsManager::ConnectionConfig conn_config;
+    conn_config.port_num = port_num_val;
+    conn_config.gid_index = gid_index;
+    conn_config.max_qp_per_connection = world_size - 1;
+    conn_config.cq_size = 1024;
+    
+    uint64_t conn_id = global_verbs_manager->createConnection(conn_config);
+    if (conn_id == 0) {
+      PCCL_LOG_ERROR("Failed to create connection for QP precreation");
+      return;
+    }
+    
+    pccl::communicator::VerbsManager::QPConfig qp_config;
+    qp_config.qp_type = IBV_QPT_RC;
+    qp_config.max_send_wr = 1024;
+    qp_config.max_recv_wr = 1024;
+    qp_config.max_send_sge = 32;
+    qp_config.max_recv_sge = 32;
+    qp_config.max_inline_data = 256;
+    
+    for (int peer_rank = 0; peer_rank < world_size; peer_rank++) {
+      if (peer_rank == current_rank) continue;
+      
+      uint64_t qp_id = global_verbs_manager->createQP(conn_id, qp_config);
+      if (qp_id == 0) {
+        PCCL_LOG_ERROR("Failed to create QP for peer rank {}", peer_rank);
+        continue;
+      }
+      
+      if (!global_verbs_manager->modifyQPToInit(conn_id, qp_id)) {
+        PCCL_LOG_ERROR("Failed to modify QP to INIT for peer rank {}", peer_rank);
+        continue;
+      }
+      
+      auto metadata = global_verbs_manager->getLocalMetadata(conn_id, qp_id);
+      
+      std::string qp_key = std::format("pccl.roce.{}.{}.qp_num", current_rank, peer_rank);
+      std::string lid_key = std::format("pccl.roce.{}.{}.lid", current_rank, peer_rank);
+      std::string gid_key = std::format("pccl.roce.{}.{}.gid", current_rank, peer_rank);
+      
+      config.endpoint_configs[qp_key] = std::to_string(metadata.qp_num);
+      config.endpoint_configs[lid_key] = std::to_string(metadata.lid);
+      config.endpoint_configs[gid_key] = utils::marshal_to_hex_str(&metadata.gid, sizeof(metadata.gid));
+      
+      PCCL_LOG_DEBUG("Precreated QP for peer {}: qp_num={}, lid={}", 
+                    peer_rank, metadata.qp_num, metadata.lid);
+    }
   }
 }
 
@@ -210,6 +265,9 @@ bool initializeRuntime(std::vector<RuntimeConfig>& runtime_configs, int rank, in
   RuntimeConfig& self_config = cluster_configs[rank];
   PCCL_LOG_INFO("Initializing runtime for rank {}", rank);
 
+  self_config.endpoint_configs["pccl.runtime.rank"] = std::to_string(rank);
+  self_config.endpoint_configs["pccl.runtime.world_size"] = std::to_string(world_size);
+
   registerCommunicationResources(self_config);
 
   oob_channel = std::make_unique<communicator::AsioOobChannel>();
@@ -243,7 +301,6 @@ bool initializeRuntime(std::vector<RuntimeConfig>& runtime_configs, int rank, in
   }
 
   self_config.endpoint_configs["pccl.runtime.initialized"] = "true";
-  self_config.endpoint_configs["pccl.runtime.rank"] = std::to_string(rank);
 
   channel_manager = std::make_unique<communicator::ChannelManager>();
 
@@ -288,7 +345,7 @@ bool initializeRuntime(std::vector<RuntimeConfig>& runtime_configs, int rank, in
       RuntimeConfig peer_config = RuntimeConfig::fromJson(msg.payload);
       {
         std::lock_guard<std::mutex> lock(config_mutex);
-        cluster_configs[msg.src_rank].endpoint_configs.insert(peer_config.endpoint_configs.begin(), peer_config.endpoint_configs.end());
+        cluster_configs[msg.src_rank] = peer_config;
         int received = ++configs_received;
         PCCL_LOG_DEBUG("Received config from rank {}, total received: {}", 
                       msg.src_rank, received);
@@ -366,8 +423,6 @@ bool initializeRuntime(std::vector<RuntimeConfig>& runtime_configs, int rank, in
     }
   }
 
-  // graph_executor = std::make_unique<engine::GraphExecutor>();
-  
   PCCL_LOG_INFO("Runtime initialized successfully for rank {}", rank);
   return true;
 }
@@ -394,6 +449,11 @@ void shutdownRuntime() {
     channel_manager->shutdown();
     channel_manager.reset();
     PCCL_LOG_DEBUG("Channel manager shutdown");
+  }
+  
+  if (global_verbs_manager) {
+    global_verbs_manager.reset();
+    PCCL_LOG_DEBUG("Global verbs manager shutdown");
   }
   
   if (oob_channel) {

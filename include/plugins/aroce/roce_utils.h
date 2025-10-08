@@ -280,6 +280,9 @@ public:
   size_t getConnectionCount() const;
   size_t getQPCount(ConnectionId conn_id) const;
   VerbsRemotePeerInfo getLocalMetadata(ConnectionId conn_id, QPId qp_id);
+  inline std::shared_ptr<VerbsContext> getContext() const {
+    return context_;
+  }
 
 private:
   struct ConnectionInfo {

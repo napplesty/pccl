@@ -62,10 +62,17 @@ bool RoCEAdapter::connect(const Endpoint& self, const Endpoint& peer) {
       return false;
     }
     
+    int self_rank = std::stoi(self.attributes_.at("pccl.runtime.rank"));
+    int peer_rank = std::stoi(peer.attributes_.at("pccl.runtime.rank"));
+    
+    std::string qp_key = std::format("pccl.roce.{}.{}.qp_num", peer_rank, self_rank);
+    std::string lid_key = std::format("pccl.roce.{}.{}.lid", peer_rank, self_rank);
+    std::string gid_key = std::format("pccl.roce.{}.{}.gid", peer_rank, self_rank);
+    
     pccl::communicator::VerbsRemotePeerInfo remote_info;
-    remote_info.qp_num = std::stoul(peer.attributes_.at("pccl.roce.qp_num"));
-    remote_info.lid = std::stoul(peer.attributes_.at("pccl.roce.lid"));
-    std::string gid_str = peer.attributes_.at("pccl.roce.gid");
+    remote_info.qp_num = std::stoul(peer.attributes_.at(qp_key));
+    remote_info.lid = std::stoul(peer.attributes_.at(lid_key));
+    std::string gid_str = peer.attributes_.at(gid_key);
     utils::unmarshal_from_hex_str(&remote_info.gid, gid_str);
     
     if (!verbs_manager_->connect(conn_id_, remote_info)) {
