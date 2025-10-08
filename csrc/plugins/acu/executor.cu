@@ -1,10 +1,51 @@
-#include "runtime/engine/graph_executor.h"
-#include <plugins/acu/executor.h>
-#include <plugins/acu/kernel_impls/tensor_ops.h>
+#include "plugins/acu/executor.h"
+#include "plugins/acu/kernel_impls/tensor_ops.h"
+#include "utils/logging.h"
 #include <cuda_runtime.h>
 #include <cuda/atomic>
 
 namespace pccl::engine::cuda {
+
+CUDAExecutorManager::CUDAExecutorManager(GraphBufferLayout* graph_layout, 
+                                        int num_sms, 
+                                        ReadyQueueLayout* ready_queues,
+                                        int num_queues,
+                                        cudaStream_t stream)
+  : graph_layout_(graph_layout),
+    num_sms_(num_sms),
+    ready_queues_(ready_queues),
+    num_queues_(num_queues),
+    current_stream_(stream) {
+}
+
+CUDAExecutorManager::~CUDAExecutorManager() {
+  if (current_stream_) {
+    cudaStreamDestroy(current_stream_);
+  }
+}
+
+bool CUDAExecutorManager::initialize() {
+  if (num_sms_ <= 0) {
+    PCCL_LOG_ERROR("Invalid number of SMs: {}", num_sms_);
+    return false;
+  }
+  
+  if (current_stream_ == nullptr) {
+    cudaStreamCreate(&current_stream_);
+  }
+  
+  PCCL_LOG_DEBUG("Initialized CUDA executor with {} SMs", num_sms_);
+  return true;
+}
+
+void CUDAExecutorManager::launch() {
+  int block_size = 256;
+  int grid_size = num_sms_;
+  
+  cuda_executor_kernel<<<grid_size, block_size, 4096, current_stream_>>>(graph_layout_);
+  
+  PCCL_LOG_DEBUG("Launched CUDA executor kernel with {} blocks, {} threads per block", grid_size, block_size);
+}
 
 __global__ void cuda_executor_kernel(GraphBufferLayout* graph_layout) {
   int thread_id = threadIdx.x;
