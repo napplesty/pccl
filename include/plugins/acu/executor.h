@@ -14,7 +14,7 @@ public:
   ~CUDAExecutorManager();
   bool initialize();
   void launch();
-private:
+public:
   GraphBufferLayout* graph_layout_;
   int num_sms_;
   ReadyQueueLayout *ready_queues_;

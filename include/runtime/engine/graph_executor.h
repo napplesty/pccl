@@ -1,9 +1,9 @@
 #pragma once
-
-#include <cstdint>
 #include <memory>
 #include <map>
 #include <runtime/api/repr.h>
+#include <runtime/engine/memory_manager.h>
+#include <runtime/communicator/channel.h>
 
 namespace pccl::engine {
 
@@ -54,16 +54,19 @@ class GraphExecutor {
 public:
   GraphExecutor();
   ~GraphExecutor();
-  bool initialize(GraphBufferLayout* graph_layout, 
-                  const std::map<ExecutorType, int> &executor_config,
-                  std::map<std::string, std::string> &extra_params);
+  bool initialize(
+    runtime::PrimitiveGrpah& graph,
+    const engine::WorkspaceHandle& workspace_handle,
+    const std::map<runtime::ExecutorType, int>& executor_config,
+    std::shared_ptr<communicator::ChannelManager> channel_manager,
+    std::shared_ptr<MemoryManager> memory_manager
+  );
   void issue();
   void wait();
   void initialize_ready_queues();
 private:
-  GraphBufferLayout* graph_layout_;
   class Impl;
   std::unique_ptr<Impl> impl_;
 };
 
-}
+} // namespace pccl::engine
