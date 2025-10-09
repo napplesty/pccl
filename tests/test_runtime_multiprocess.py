@@ -57,7 +57,7 @@ class RuntimeTester:
                     "pccl.roce.gid_index": "3",
                     "pccl.roce.lid": "0",
                     "pccl.roce.device_name": f"mlx5_bond_{i+1}",
-                    "pccl.runtime.use_tcp": "true",
+                    "pccl.runtime.use_tcp": "false",
                     "pccl.tcp.local_ip": "127.0.0.1",
                     "pccl.tcp.local_port": str(31280 + i),
                 }

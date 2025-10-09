@@ -11,6 +11,9 @@
 
 namespace pccl::engine {
 
+static constexpr int num_signal_slots = 1024;
+static constexpr int max_buffers_per_type = 64;
+
 class GlobalBufferID {
 public:
   void *ipc_addr = nullptr;
@@ -56,7 +59,6 @@ struct WorkspaceHandle {
   uint64_t operator_id;
   std::vector<int> participant_ranks;
   std::map<int, std::vector<GlobalBufferID>> buffers;
-  std::map<std::string, std::string> metadata;
   
   WorkspaceHandle() : operator_id(0) {}
 };
@@ -64,9 +66,9 @@ struct WorkspaceHandle {
 class MemoryManagerCommInterface {
 public:
   virtual ~MemoryManagerCommInterface() = default;
-  virtual bool registerMemoryRegion(const GlobalBufferID& buffer_id) = 0;
-  virtual bool deregisterMemoryRegion(const GlobalBufferID& buffer_id) = 0;
-  virtual bool syncWorkspaceAllocation(const WorkspaceHandle& handle) = 0;
+  virtual bool registerMemoryRegion(GlobalBufferID& buffer_id) = 0;
+  virtual bool deregisterMemoryRegion(GlobalBufferID& buffer_id) = 0;
+  virtual bool syncWorkspaceAllocation(WorkspaceHandle& handle) = 0;
   virtual bool waitForSignal(uint64_t signal_id, int timeout_ms = 5000) = 0;
   virtual bool sendSignal(uint64_t signal_id, int target_rank) = 0;
 };
@@ -84,32 +86,27 @@ public:
   WorkspaceHandle get_workspace_for_operator(uint64_t operator_id, 
                                            const std::vector<int>& ranks,
                                            const std::map<runtime::ExecutorType, size_t>& buffer_requirements);
-  bool post_sync_workspace(const WorkspaceHandle& handle);
-  void deallocate_workspace(const WorkspaceHandle& handle);
+  bool post_sync_workspace(WorkspaceHandle& handle);
+  void deallocate_workspace(WorkspaceHandle& handle);
   WorkspaceHandle get_workspace(uint64_t operator_id);
   
   std::vector<GlobalBufferID> getLocalBuffers() const;
   GlobalBufferID getBuffer(int rank, runtime::ExecutorType executor_type, int buffer_idx) const;
   
   void setCommInterface(std::shared_ptr<MemoryManagerCommInterface> comm_interface);
+  GlobalBufferID &get_signal_buffer() {
+    return signal_buffer;
+  }
+
+  GlobalBufferID &get_tmp_buffer() {
+    return remote_signal_buffer_cache;
+  }
+
+  GlobalBufferID &get_buffer_with_triple(std::tuple<int, int, int> &triple);
 
 private:
-  struct RemoteBufferInfo {
-    GlobalBufferID buffer_id;
-    std::string connection_info;
-    uint64_t registered_time;
-  };
-
-  GlobalBufferID allocateBufferForOperator(int rank, runtime::ExecutorType executor_type, size_t size);
-  bool synchronizeBufferAllocation(uint64_t operator_id, 
-                                 const std::vector<int>& ranks,
-                                 const std::map<runtime::ExecutorType, size_t>& requirements);
-  bool registerRemoteBuffer(const GlobalBufferID& remote_buffer);
   void setupSignalSynchronization();
-  bool synchronizeWorkspace(const WorkspaceHandle& handle);
-  void releaseWorkspaceBuffers(const WorkspaceHandle& handle);
-  std::string generateShmemKey(void* ptr);
-  int getMasterRank(const std::vector<int>& ranks);
+  void releaseWorkspaceBuffers(WorkspaceHandle& handle);
   
   std::shared_ptr<MemoryManagerCommInterface> comm_interface_;
   
@@ -118,7 +115,6 @@ private:
   
   std::unordered_map<uint64_t, WorkspaceHandle> active_workspaces_;
   std::map<int, std::vector<GlobalBufferID>> global_buffers_;
-  std::map<int, std::vector<RemoteBufferInfo>> remote_buffers_;
   
   std::set<int> ranks_in_a_host_;
   

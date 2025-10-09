@@ -207,9 +207,12 @@ public:
   int postRecv(ibv_recv_wr* wr, ibv_recv_wr** bad_wr) const;
   uint32_t getQpNum() const;
   ibv_qp* get() const;
+  bool connected();
+  void set_connected(bool connected);
 private:
   ibv_qp* qp_ = nullptr;
   uint32_t qp_num_ = 0;
+  bool connected_ = false;
 };
 
 struct VerbsRemotePeerInfo {
@@ -260,9 +263,9 @@ public:
 
   bool initialize(const std::string& device_name = "", uint8_t port_num = 1);
   ConnectionId createConnection(const ConnectionConfig& config);
-  bool destroyConnection(ConnectionId conn_id);
-  bool connect(ConnectionId conn_id, const VerbsRemotePeerInfo& remote_peer_info);
-  bool disconnect(ConnectionId conn_id);
+  bool destroyConnection(ConnectionId conn_id, QPId qp_id);
+  bool connect(ConnectionId conn_id, QPId qp_id, const VerbsRemotePeerInfo& remote_peer_info);
+  bool disconnect(ConnectionId conn_id, QPId qp_id);
   QPId createQP(ConnectionId conn_id, const QPConfig& config);
   bool modifyQPToInit(ConnectionId conn_id, QPId qp_id);
   bool modifyQPToRTR(ConnectionId conn_id, QPId qp_id, 
@@ -289,7 +292,6 @@ private:
     ConnectionConfig config;
     std::shared_ptr<VerbsCompletionQueue> cq;
     std::unordered_map<QPId, std::shared_ptr<VerbsQueuePair>> qps;
-    std::atomic<bool> connected{false};
 
     ConnectionInfo();
     ConnectionInfo(const ConnectionInfo& other);

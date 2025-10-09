@@ -184,7 +184,7 @@ const Endpoint& TCPAdapter::getPeerEndpoint() const {
   return peer_endpoint_;
 }
 
-bool TCPAdapter::registerMemoryRegion(const MemRegion& region) {
+bool TCPAdapter::registerMemoryRegion(MemRegion& region) {
   std::lock_guard<std::mutex> lock(regions_mutex_);
   
   TCPMemoryRegion tcp_region;
@@ -199,7 +199,7 @@ bool TCPAdapter::registerMemoryRegion(const MemRegion& region) {
   return true;
 }
 
-bool TCPAdapter::deregisterMemoryRegion(const MemRegion& region) {
+bool TCPAdapter::deregisterMemoryRegion(MemRegion& region) {
   std::lock_guard<std::mutex> lock(regions_mutex_);
   
   auto it = registered_regions_.find(region.ptr_);

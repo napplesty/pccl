@@ -1,6 +1,4 @@
 #include "runtime/communicator/channel.h"
-#include "plugins/atcp/tcp_adapter.h"
-#include "plugins/aroce/roce_adapter.h"
 #include "utils/logging.h"
 #include <algorithm>
 
@@ -257,7 +255,7 @@ bool CommunicationChannel::addEngine(std::unique_ptr<CommEngine> engine) {
   
   ChannelType type = engine->getType();
   std::lock_guard lock(engines_mutex_);
-  engines_[type] = std::move(EngineInfo(std::move(engine)));
+  engines_[type] = EngineInfo(std::move(engine));
   return true;
 }
 
@@ -272,7 +270,7 @@ bool CommunicationChannel::removeEngine(ChannelType type) {
   return false;
 }
 
-bool CommunicationChannel::registerMemoryRegion(const MemRegion& region) {
+bool CommunicationChannel::registerMemoryRegion(MemRegion& region) {
   std::lock_guard lock(regions_mutex_);
   registered_regions_[region.ptr_] = region;
   
@@ -288,7 +286,7 @@ bool CommunicationChannel::registerMemoryRegion(const MemRegion& region) {
   return all_success;
 }
 
-bool CommunicationChannel::deregisterMemoryRegion(const MemRegion& region) {
+bool CommunicationChannel::deregisterMemoryRegion(MemRegion& region) {
   std::lock_guard lock(regions_mutex_);
   auto it = registered_regions_.find(region.ptr_);
   if (it != registered_regions_.end()) {
@@ -364,6 +362,7 @@ void CommunicationChannel::cleanupCompletedTransactions() {
 }
 
 ChannelManager::ChannelManager() {
+
 }
 
 ChannelManager::~ChannelManager() {

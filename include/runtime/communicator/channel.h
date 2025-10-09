@@ -9,7 +9,6 @@
 #include <atomic>
 #include <mutex>
 #include <map>
-#include <set>
 #include <nlohmann/json.hpp>
 
 namespace pccl::communicator {
@@ -82,8 +81,8 @@ public:
   virtual const Endpoint& getSelfEndpoint() const = 0;
   virtual const Endpoint& getPeerEndpoint() const = 0;
   
-  virtual bool registerMemoryRegion(const MemRegion& region) = 0;
-  virtual bool deregisterMemoryRegion(const MemRegion& region) = 0;
+  virtual bool registerMemoryRegion(MemRegion& region) = 0;
+  virtual bool deregisterMemoryRegion(MemRegion& region) = 0;
 };
 
 class CommunicationChannel {
@@ -111,8 +110,8 @@ public:
   bool addEngine(std::unique_ptr<CommEngine> engine);
   bool removeEngine(ChannelType type);
   
-  bool registerMemoryRegion(const MemRegion& region);
-  bool deregisterMemoryRegion(const MemRegion& region);
+  bool registerMemoryRegion(MemRegion& region);
+  bool deregisterMemoryRegion(MemRegion& region);
   
   const Endpoint& getSelfEndpoint() const;
   const Endpoint& getPeerEndpoint() const;

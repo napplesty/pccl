@@ -1,4 +1,5 @@
 #include "runtime/api/runtime.h"
+#include "runtime/api/repr.h"
 #include "runtime/communicator/oob_comm.h"
 #include "runtime/engine/graph_executor.h"
 #include "runtime/engine/memory_manager.h"
@@ -9,14 +10,18 @@
 #include "utils/logging.h"
 #include "utils/hex_utils.hpp"
 #include "utils/debug.hpp"
+#include <cstdint>
 #include <cstring>
 #include <format>
 #include <infiniband/verbs.h>
-#include <thread>
+#include <map>
+#include <memory>
 #include <chrono>
 #include <ifaddrs.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
+#include <tuple>
+#include <vector>
 
 namespace pccl::runtime {
 
@@ -29,101 +34,138 @@ static int current_rank = -1;
 static int world_size = 0;
 static std::unique_ptr<pccl::communicator::VerbsManager> global_verbs_manager = nullptr;
 
+static std::tuple<int, int, int> get_signature(engine::GlobalBufferID& buffer_id) {
+  int rank = buffer_id.getRank();
+  int type = (int)buffer_id.getExecutorType();
+  int index = buffer_id.getBufferIdx();
+  return std::make_tuple(rank, type, index);
+}
+
+static void portable_roce_read_sync(int src_rank, engine::GlobalBufferID& dstBuffer, engine::GlobalBufferID& srcBuffer) {
+  int self_rank = current_rank;
+  std::map<std::string, std::string> &self_attrs = cluster_configs[self_rank].endpoint_configs;
+  uint64_t qp_id, conn_id;
+  utils::unmarshal_from_hex_str(&qp_id, self_attrs.at(std::format("pccl.roce.{}.{}.qp_id", self_rank, src_rank)));
+  utils::unmarshal_from_hex_str(&conn_id, self_attrs.at("pccl.roce.conn_id.global"));
+
+  uint32_t lkey, rkey;
+  utils::unmarshal_from_hex_str(&lkey, dstBuffer.shareable_handles.at("lkey"));
+  utils::unmarshal_from_hex_str(&rkey, srcBuffer.shareable_handles.at("lkey"));
+  
+  ibv_send_wr wr{};
+  ibv_sge sge{};
+
+  sge.addr = reinterpret_cast<uint64_t>(dstBuffer.addr);
+  sge.length = dstBuffer.getBufferSize();
+  sge.lkey = lkey;
+
+  wr.wr_id = 0xbf16f32f16f8;
+  wr.next = nullptr;
+  wr.sg_list = &sge;
+
+  wr.num_sge = 1;
+  wr.opcode = IBV_WR_RDMA_READ;
+  wr.send_flags = IBV_SEND_SIGNALED;
+
+  wr.wr.rdma.remote_addr = reinterpret_cast<uint64_t>(srcBuffer.addr);
+  wr.wr.rdma.rkey = rkey;
+
+  if (!global_verbs_manager->postSend(conn_id, qp_id, &wr, nullptr)) {
+    PCCL_LOG_CRITICAL("Fail to read");
+  }
+
+  ibv_wc wc;
+  while(true) {
+    global_verbs_manager->pollCQ(conn_id, 1, &wc);
+    if(wc.wr_id == 0xbf16f32f16f8) {
+      if (wc.status == IBV_WC_SUCCESS) {
+        break;
+      } else {
+        PCCL_LOG_CRITICAL("Fail to read");
+      }
+    }
+  }
+  
+  return;
+}
+
+static std::vector<engine::GlobalBufferID> portable_parse_signals(void *signals, uint64_t operator_id, int src_rank, int num_expected) {
+  int num_loaded = 0;
+  int64_t *signal_buffer_ptr = (int64_t *)signals;
+  for(int i = 0; i < engine::max_buffers_per_type; i++) {
+    if (signal_buffer_ptr[(int)ExecutorType::CUDA * engine::max_buffers_per_type + i] == (int64_t)operator_id) {
+      num_loaded ++;
+    }
+  }
+  if (num_expected != num_loaded) {
+    return {};
+  }
+  std::vector<engine::GlobalBufferID> buff;
+  for(int i = 0; i < engine::max_buffers_per_type; i++) {
+    if (signal_buffer_ptr[(int)ExecutorType::CUDA * engine::max_buffers_per_type + i] == (int64_t)operator_id) {
+      std::tuple<int, int, int> triple = std::make_tuple(src_rank, (int)ExecutorType::CUDA, i);
+      buff.push_back(memory_manager->get_buffer_with_triple(triple));
+    }
+  }
+  return buff;
+}
+
+static std::map<std::tuple<int, int, int>, std::shared_ptr<pccl::communicator::VerbsMemoryRegion>> cache;
+
 class RuntimeCommInterface : public engine::MemoryManagerCommInterface {
 public:
-  RuntimeCommInterface(communicator::ChannelManager* channel_mgr)
-    : channel_manager_(channel_mgr) {}
-
-  bool registerMemoryRegion(const engine::GlobalBufferID& buffer_id) override {
-    if (!channel_manager_) return false;
+  bool registerMemoryRegion(engine::GlobalBufferID& buffer_id) override {
+    if (!global_verbs_manager) return false;
+    int access = IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_READ | 
+                 IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_REMOTE_ATOMIC;
+    auto mr = std::make_shared<pccl::communicator::VerbsMemoryRegion>(
+      *global_verbs_manager->getPD(), buffer_id.addr, buffer_id.getBufferSize(), access);
     
-    auto endpoints = channel_manager_->getConnectedEndpoints();
-    for (const auto& endpoint : endpoints) {
-      auto channel = channel_manager_->getChannel(endpoint);
-      if (channel) {
-        communicator::MemRegion region;
-        region.ptr_ = buffer_id.addr;
-        region.size_ = buffer_id.getBufferSize();
-        region.lkey_ = 0;
-        region.rkey_ = 0;
-        
-        channel->registerMemoryRegion(region);
-      }
-    }
+    std::tuple<int, int, int> rti = get_signature(buffer_id);
+    cache[rti] = mr;
+
+    uint32_t rkey = mr->getRKey();
+    uint32_t lkey = mr->getLKey();
+    
+    buffer_id.shareable_handles["rkey"] = utils::marshal_to_hex_str(&rkey, sizeof(rkey));
+    buffer_id.shareable_handles["lkey"] = utils::marshal_to_hex_str(&lkey, sizeof(lkey));
+
     return true;
   }
 
-  bool deregisterMemoryRegion(const engine::GlobalBufferID& buffer_id) override {
-    if (!channel_manager_) return false;
-    
-    auto endpoints = channel_manager_->getConnectedEndpoints();
-    for (const auto& endpoint : endpoints) {
-      auto channel = channel_manager_->getChannel(endpoint);
-      if (channel) {
-        communicator::MemRegion region;
-        region.ptr_ = buffer_id.addr;
-        region.size_ = buffer_id.getBufferSize();
-        channel->deregisterMemoryRegion(region);
-      }
-    }
+  bool deregisterMemoryRegion(engine::GlobalBufferID& buffer_id) override {
     return true;
   }
 
-  bool syncWorkspaceAllocation(const engine::WorkspaceHandle& handle) override {
-    if (!oob_channel) return false;
-    
-    nlohmann::json allocation_info;
-    allocation_info["operator_id"] = handle.operator_id;
-    allocation_info["participants"] = handle.participant_ranks;
-    
-    communicator::OobMessage msg;
-    msg.type_ = communicator::OobMsgType::BUFFER_UPDATE;
-    msg.src_rank = current_rank;
-    msg.payload = allocation_info.dump();
-    
-    for (int rank : handle.participant_ranks) {
-      if (rank == current_rank) continue;
-      
-      auto it = cluster_configs.find(rank);
-      if (it != cluster_configs.end()) {
-        communicator::Endpoint peer_endpoint;
-        peer_endpoint.attributes_ = it->second.endpoint_configs;
-        oob_channel->send(msg, peer_endpoint);
+  bool syncWorkspaceAllocation(engine::WorkspaceHandle& handle) override {
+    std::vector<int> &participants = handle.participant_ranks;
+    engine::GlobalBufferID &tmp_buf = memory_manager->get_tmp_buffer();
+    for (int participant : participants) {
+      if (participant == current_rank) {
+        continue;
+      }
+      auto triple = std::make_tuple(participant, (int)ExecutorType::CPU, 0);
+      engine::GlobalBufferID &src_buf = memory_manager->get_buffer_with_triple(triple);
+      while(true) {
+        portable_roce_read_sync(participant, tmp_buf, src_buf);
+        std::vector<engine::GlobalBufferID> bufs = \
+            portable_parse_signals(tmp_buf.addr, handle.operator_id, participant, handle.buffers.at(current_rank).size());
+        if (bufs.size() > 0) {
+          handle.buffers[participant] = bufs;
+          break;
+        }
       }
     }
-    
     return true;
   }
 
   bool waitForSignal(uint64_t signal_id, int timeout_ms) override {
-    auto start_time = std::chrono::steady_clock::now();
-    while (std::chrono::duration_cast<std::chrono::milliseconds>(
-        std::chrono::steady_clock::now() - start_time).count() < timeout_ms) {
-      std::this_thread::sleep_for(std::chrono::milliseconds(10));
-    }
     return true;
   }
 
   bool sendSignal(uint64_t signal_id, int target_rank) override {
-    if (!oob_channel) return false;
-    
-    communicator::OobMessage msg;
-    msg.type_ = communicator::OobMsgType::HEARTBEAT;
-    msg.src_rank = current_rank;
-    msg.payload = std::to_string(signal_id);
-    
-    auto it = cluster_configs.find(target_rank);
-    if (it != cluster_configs.end()) {
-      communicator::Endpoint peer_endpoint;
-      peer_endpoint.attributes_ = it->second.endpoint_configs;
-      return oob_channel->send(msg, peer_endpoint);
-    }
-    
-    return false;
+    return true;
   }
-
-private:
-  communicator::ChannelManager* channel_manager_;
 };
 
 void registerCommunicationResources(RuntimeConfig& config) {
@@ -139,14 +181,16 @@ void registerCommunicationResources(RuntimeConfig& config) {
       PCCL_LOG_ERROR("Failed to initialize Verbs manager for QP precreation");
       return;
     }
+
+    config.endpoint_configs["pccl.roce.verbsManager.global"] = \
+        utils::marshal_to_hex_str(&global_verbs_manager, sizeof(global_verbs_manager));
     
-    int port_num_val = std::stoi(config.endpoint_configs["pccl.roce.port_num"]);
     int gid_index = std::stoi(config.endpoint_configs["pccl.roce.gid_index"]);
     
     ibv_gid self_gid;
     auto context = global_verbs_manager->getContext();
     if (context) {
-      verbs_lib.queryGid(context->get(), port_num_val, gid_index, &self_gid);
+      verbs_lib.queryGid(context->get(), port_num, gid_index, &self_gid);
       config.endpoint_configs["pccl.roce.gid"] = utils::marshal_to_hex_str((void *)&self_gid, sizeof(self_gid));
     } else {
       PCCL_LOG_ERROR("Failed to get context for GID query");
@@ -154,24 +198,27 @@ void registerCommunicationResources(RuntimeConfig& config) {
     }
     
     pccl::communicator::VerbsManager::ConnectionConfig conn_config;
-    conn_config.port_num = port_num_val;
+    conn_config.port_num = port_num;
     conn_config.gid_index = gid_index;
     conn_config.max_qp_per_connection = world_size - 1;
-    conn_config.cq_size = 1024;
+    conn_config.cq_size = 8192;
     
     uint64_t conn_id = global_verbs_manager->createConnection(conn_config);
     if (conn_id == 0) {
       PCCL_LOG_ERROR("Failed to create connection for QP precreation");
       return;
     }
+
+    config.endpoint_configs["pccl.roce.conn_id.global"] = \
+        utils::marshal_to_hex_str(&conn_id, sizeof(conn_id));
     
     pccl::communicator::VerbsManager::QPConfig qp_config;
     qp_config.qp_type = IBV_QPT_RC;
     qp_config.max_send_wr = 1024;
     qp_config.max_recv_wr = 1024;
-    qp_config.max_send_sge = 32;
-    qp_config.max_recv_sge = 32;
-    qp_config.max_inline_data = 256;
+    qp_config.max_send_sge = 1;
+    qp_config.max_recv_sge = 1;
+    qp_config.max_inline_data = 0;
     
     for (int peer_rank = 0; peer_rank < world_size; peer_rank++) {
       if (peer_rank == current_rank) continue;
@@ -189,16 +236,17 @@ void registerCommunicationResources(RuntimeConfig& config) {
       
       auto metadata = global_verbs_manager->getLocalMetadata(conn_id, qp_id);
       
+      std::string qp_id_key = std::format("pccl.roce.{}.{}.qp_id", current_rank, peer_rank);
       std::string qp_key = std::format("pccl.roce.{}.{}.qp_num", current_rank, peer_rank);
       std::string lid_key = std::format("pccl.roce.{}.{}.lid", current_rank, peer_rank);
       std::string gid_key = std::format("pccl.roce.{}.{}.gid", current_rank, peer_rank);
       
+      config.endpoint_configs[qp_id_key] = utils::marshal_to_hex_str(&qp_id, sizeof(qp_id));
       config.endpoint_configs[qp_key] = std::to_string(metadata.qp_num);
       config.endpoint_configs[lid_key] = std::to_string(metadata.lid);
       config.endpoint_configs[gid_key] = utils::marshal_to_hex_str(&metadata.gid, sizeof(metadata.gid));
       
-      PCCL_LOG_DEBUG("Precreated QP for peer {}: qp_num={}, lid={}", 
-                    peer_rank, metadata.qp_num, metadata.lid);
+      PCCL_LOG_DEBUG("Precreated QP for peer {}: qp_num={}, lid={}", peer_rank, metadata.qp_num, metadata.lid);
     }
   }
 }
@@ -281,6 +329,8 @@ bool initializeRuntime(std::vector<RuntimeConfig>& runtime_configs, int rank, in
   PCCL_LOG_DEBUG("OOB communication initialized");
 
   memory_manager = std::make_unique<engine::MemoryManager>();
+  auto comm_interface = std::make_shared<RuntimeCommInterface>();
+  memory_manager->setCommInterface(comm_interface);
   
   if (!memory_manager->initialize(self_config)) {
     PCCL_LOG_ERROR("Failed to initialize memory manager");
@@ -391,16 +441,8 @@ bool initializeRuntime(std::vector<RuntimeConfig>& runtime_configs, int rank, in
       return false;
     }
   }
+
   PCCL_LOG_INFO("Configuration synchronization completed");
-
-  auto comm_interface = std::make_shared<RuntimeCommInterface>(channel_manager.get());
-  memory_manager->setCommInterface(comm_interface);
-
-  if (!memory_manager->initialize_cluster(cluster_configs)) {
-    PCCL_LOG_ERROR("Failed to initialize memory manager cluster");
-    return false;
-  }
-  PCCL_LOG_DEBUG("Memory manager cluster initialized");
 
   for (int i = 0; i < world_size; i++) {
     if (i != rank) {
@@ -412,8 +454,7 @@ bool initializeRuntime(std::vector<RuntimeConfig>& runtime_configs, int rank, in
         continue;
       }
 
-      debug::printMap(peer_endpoint.attributes_);
-      
+      PCCL_LOG_DEBUG("Channel {} <-> {} establishing", self_config.endpoint_configs.at("pccl.runtime.rank"), peer_endpoint.attributes_.at("pccl.runtime.rank"));
       auto channel = channel_manager->getOrCreateChannel(peer_endpoint);
       if (!channel) {
         PCCL_LOG_WARN("Failed to create channel to rank {}", i);
@@ -422,6 +463,13 @@ bool initializeRuntime(std::vector<RuntimeConfig>& runtime_configs, int rank, in
       }
     }
   }
+
+  if (!memory_manager->initialize_cluster(cluster_configs)) {
+    PCCL_LOG_ERROR("Failed to initialize memory manager cluster");
+    return false;
+  }
+
+  PCCL_LOG_DEBUG("Memory manager cluster initialized");
 
   PCCL_LOG_INFO("Runtime initialized successfully for rank {}", rank);
   return true;

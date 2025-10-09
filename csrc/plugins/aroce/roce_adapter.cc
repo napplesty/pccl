@@ -6,9 +6,11 @@
 
 namespace pccl::communicator {
 
+
+
 RoCEAdapter::RoCEAdapter(const Endpoint& self, const Endpoint& peer)
   : self_endpoint_(self), peer_endpoint_(peer) {
-  verbs_manager_ = std::make_unique<pccl::communicator::VerbsManager>();
+  utils::unmarshal_from_hex_str(&verbs_manager_, self.attributes_.at("pccl.roce.verbsManager.global"));
 }
 
 RoCEAdapter::~RoCEAdapter() {
@@ -17,16 +19,8 @@ RoCEAdapter::~RoCEAdapter() {
 
 bool RoCEAdapter::connect(const Endpoint& self, const Endpoint& peer) {
   try {
-    if (!setupVerbsManager()) {
+    if (!self.attributes_.contains("pccl.roce.verbsManager.global")) {
       PCCL_LOG_ERROR("Failed to setup Verbs manager");
-      return false;
-    }
-    
-    std::string device_name = self.attributes_.at("pccl.roce.device_name");
-    uint8_t port_num = std::stoi(self.attributes_.at("pccl.roce.port_num"));
-    
-    if (!verbs_manager_->initialize(device_name, port_num)) {
-      PCCL_LOG_ERROR("Failed to initialize Verbs manager");
       return false;
     }
     
@@ -36,35 +30,10 @@ bool RoCEAdapter::connect(const Endpoint& self, const Endpoint& peer) {
       return false;
     }
     
-    pccl::communicator::VerbsManager::ConnectionConfig conn_config;
-    conn_config.port_num = port_num;
-    conn_config.gid_index = std::stoi(self.attributes_.at("pccl.roce.gid_index"));
-    conn_config.max_qp_per_connection = 1;
-    conn_config.cq_size = 1024;
-    
-    conn_id_ = verbs_manager_->createConnection(conn_config);
-    if (conn_id_ == 0) {
-      PCCL_LOG_ERROR("Failed to create RoCE connection");
-      return false;
-    }
-    
-    pccl::communicator::VerbsManager::QPConfig qp_config;
-    qp_config.qp_type = IBV_QPT_RC;
-    qp_config.max_send_wr = 1024;
-    qp_config.max_recv_wr = 1024;
-    qp_config.max_send_sge = 32;
-    qp_config.max_recv_sge = 32;
-    qp_config.max_inline_data = 256;
-    
-    qp_id_ = verbs_manager_->createQP(conn_id_, qp_config);
-    if (qp_id_ == 0) {
-      PCCL_LOG_ERROR("Failed to create RoCE QP");
-      return false;
-    }
-    
     int self_rank = std::stoi(self.attributes_.at("pccl.runtime.rank"));
     int peer_rank = std::stoi(peer.attributes_.at("pccl.runtime.rank"));
-    
+
+    std::string qp_id_key = std::format("pccl.roce.{}.{}.qp_id", self_rank, peer_rank);
     std::string qp_key = std::format("pccl.roce.{}.{}.qp_num", peer_rank, self_rank);
     std::string lid_key = std::format("pccl.roce.{}.{}.lid", peer_rank, self_rank);
     std::string gid_key = std::format("pccl.roce.{}.{}.gid", peer_rank, self_rank);
@@ -72,10 +41,14 @@ bool RoCEAdapter::connect(const Endpoint& self, const Endpoint& peer) {
     pccl::communicator::VerbsRemotePeerInfo remote_info;
     remote_info.qp_num = std::stoul(peer.attributes_.at(qp_key));
     remote_info.lid = std::stoul(peer.attributes_.at(lid_key));
-    std::string gid_str = peer.attributes_.at(gid_key);
-    utils::unmarshal_from_hex_str(&remote_info.gid, gid_str);
+
+    utils::unmarshal_from_hex_str(&conn_id_, self.attributes_.at("pccl.roce.conn_id.global"));
+    utils::unmarshal_from_hex_str(&remote_info.gid, peer.attributes_.at(gid_key));
+    utils::unmarshal_from_hex_str(&qp_id_, self.attributes_.at(qp_id_key));
     
-    if (!verbs_manager_->connect(conn_id_, remote_info)) {
+    PCCL_LOG_DEBUG("RoCE adapter connecting");
+
+    if (!verbs_manager_->connect(conn_id_, qp_id_, remote_info)) {
       PCCL_LOG_ERROR("Failed to connect RoCE QP");
       return false;
     }
@@ -90,8 +63,8 @@ bool RoCEAdapter::connect(const Endpoint& self, const Endpoint& peer) {
 
 void RoCEAdapter::disconnect() {
   if (verbs_manager_ && conn_id_ != 0) {
-    verbs_manager_->disconnect(conn_id_);
-    verbs_manager_->destroyConnection(conn_id_);
+    verbs_manager_->disconnect(conn_id_, qp_id_);
+    verbs_manager_->destroyConnection(conn_id_, qp_id_);
     conn_id_ = 0;
     qp_id_ = 0;
   }
@@ -107,7 +80,7 @@ uint64_t RoCEAdapter::prepSend(const MemRegion& dst, const MemRegion& src) {
     return 0;
   }
   
-  auto wr = buildSendWR(dst, src);
+  auto wr = buildWriteWR(dst, src);
   ibv_send_wr* bad_wr = nullptr;
   
   int result = verbs_manager_->postSend(conn_id_, qp_id_, &wr, &bad_wr);
@@ -185,7 +158,7 @@ const Endpoint& RoCEAdapter::getPeerEndpoint() const {
   return peer_endpoint_;
 }
 
-bool RoCEAdapter::registerMemoryRegion(const MemRegion& region) {
+bool RoCEAdapter::registerMemoryRegion(MemRegion& region) {
   if (!pd_) {
     PCCL_LOG_ERROR("Protection domain not initialized");
     return false;
@@ -200,6 +173,9 @@ bool RoCEAdapter::registerMemoryRegion(const MemRegion& region) {
     
     std::lock_guard<std::mutex> lock(regions_mutex_);
     registered_regions_[region.ptr_] = mr;
+
+    region.lkey_ = mr->getLKey();
+    region.rkey_ = mr->getRKey();
     
     PCCL_LOG_DEBUG("Registered RoCE memory region: addr={}, size={}, lkey={}, rkey={}", 
                   region.ptr_, region.size_, mr->getLKey(), mr->getRKey());
@@ -211,7 +187,7 @@ bool RoCEAdapter::registerMemoryRegion(const MemRegion& region) {
   }
 }
 
-bool RoCEAdapter::deregisterMemoryRegion(const MemRegion& region) {
+bool RoCEAdapter::deregisterMemoryRegion(MemRegion& region) {
   std::lock_guard<std::mutex> lock(regions_mutex_);
   
   auto it = registered_regions_.find(region.ptr_);
@@ -306,7 +282,7 @@ bool RoCEAdapter::waitForCompletion(uint64_t tx_id) {
       }
     }
     
-    std::this_thread::sleep_for(std::chrono::microseconds(10));
+    std::this_thread::sleep_for(std::chrono::microseconds(1));
     retries++;
   }
   
@@ -321,13 +297,6 @@ uint32_t RoCEAdapter::getLocalKey(void* addr) {
     return it->second->getLKey();
   }
   return 0;
-}
-
-bool RoCEAdapter::setupVerbsManager() {
-  if (!verbs_manager_) {
-    verbs_manager_ = std::make_unique<pccl::communicator::VerbsManager>();
-  }
-  return true;
 }
 
 } // namespace pccl::communicator

@@ -32,8 +32,8 @@ public:
   const Endpoint& getSelfEndpoint() const override;
   const Endpoint& getPeerEndpoint() const override;
 
-  bool registerMemoryRegion(const MemRegion& region) override;
-  bool deregisterMemoryRegion(const MemRegion& region) override;
+  bool registerMemoryRegion(MemRegion& region) override;
+  bool deregisterMemoryRegion(MemRegion& region) override;
 
 private:
   struct TCPMemoryRegion {
