@@ -518,18 +518,19 @@ void shutdownRuntime() {
 }
 
 bool executeGraph(PrimitiveGrpah& graph, 
-                 std::vector<int>& participants, 
-                 torch::Tensor& input, torch::Tensor& output) {
+                  std::vector<int>& participants, 
+                  torch::Tensor& input, torch::Tensor& output) {
   
   if (!memory_manager || !channel_manager) {
     PCCL_LOG_ERROR("Runtime not initialized");
     return false;
   }
+
   if (participants.empty()) {
     PCCL_LOG_ERROR("No participants specified for graph execution");
     return false;
   }
-  // 检查当前rank是否在参与者中
+
   bool is_participant = false;
   for (int rank : participants) {
     if (rank == current_rank) {
@@ -549,35 +550,25 @@ bool executeGraph(PrimitiveGrpah& graph,
     for (const auto& buffer : buffers) {
       buffer_requirements[buffer.executor_type] = buffer.size;
     }
-    if (buffer_requirements.empty()) {
-      buffer_requirements[runtime::ExecutorType::CPU] = 1024 * 1024; // 1MB
-      if (graph.getExecutors().size() > 0) {
-        for (auto exec_type : graph.getExecutors()) {
-          if (exec_type == runtime::ExecutorType::CUDA) {
-            buffer_requirements[runtime::ExecutorType::CUDA] = 1024 * 1024; // 1MB
-            break;
-          }
-        }
-      }
-    }
     engine::WorkspaceHandle workspace_handle = 
         memory_manager->get_workspace_for_operator(operator_id, participants, buffer_requirements);
+
+    memory_manager->post_sync_workspace(workspace_handle);
     
     if (workspace_handle.buffers.empty()) {
       PCCL_LOG_ERROR("Failed to create workspace for operator {}", operator_id);
       return false;
     }
+
     std::map<ExecutorType, int> executor_config = getExecutorConfig(graph);
     engine::GraphExecutor graph_executor;
+    
     if (!graph_executor.initialize(graph, workspace_handle, executor_config, channel_manager, memory_manager)) {
       PCCL_LOG_ERROR("Failed to initialize graph executor");
       memory_manager->deallocate_workspace(workspace_handle);
       return false;
     }
     PCCL_LOG_INFO("Graph executor initialized successfully");
-    if (!memory_manager->post_sync_workspace(workspace_handle)) {
-      PCCL_LOG_WARN("Workspace synchronization failed, continuing anyway");
-    }
     graph_executor.issue();
     graph_executor.wait();
     memory_manager->deallocate_workspace(workspace_handle);
