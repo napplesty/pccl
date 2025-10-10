@@ -1,6 +1,8 @@
 #include "plugins/acu/executor.h"
 #include "plugins/acu/kernel_impls/tensor_ops.h"
+#include "runtime/engine/graph_executor.h"
 #include "utils/logging.h"
+#include <cstdint>
 #include <cuda_runtime.h>
 #include <cuda/atomic>
 
@@ -56,7 +58,11 @@ __global__ void cuda_executor_kernel(GraphBufferLayout* graph_layout) {
   __shared__ int execute_index_shared[1];
   __shared__ bool work_done[1];
 
-  for (int try_time = 0; try_time < graph_layout->num_operators; try_time++) {
+  for (int try_time = 0; try_time < graph_layout->num_operators * 10000000000; try_time++) {
+    uint64_t num_completed = atomicAdd((unsigned long long *)graph_layout->completed_operator, 0);
+    if (num_completed == *graph_layout->total_operator) {
+      return;
+    }
     if (thread_id == 0) {
       work_done[0] = false;
       shared_primitive[0] = nullptr;
@@ -105,6 +111,7 @@ __global__ void cuda_executor_kernel(GraphBufferLayout* graph_layout) {
             }
           }
         }
+        uint64_t num_completed = atomicAdd((unsigned long long *)graph_layout->completed_operator, 1);
       }
     }
     __syncthreads();

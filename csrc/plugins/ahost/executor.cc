@@ -2,6 +2,7 @@
 #include "utils/logging.h"
 #include "utils/allocator.h"
 #include <atomic>
+#include <cstdint>
 #include <thread>
 #include <cstring>
 
@@ -142,10 +143,14 @@ void HostExecutorManager::execute_write_primitive(OperatorLayout* primitive, int
       communicator::MemRegion src_region;
       src_region.ptr_ = config.src_buffer;
       src_region.size_ = config.data_size;
+      src_region.lkey_ = config.src_lkey;
+      src_region.rkey_ = config.src_rkey;
       
       communicator::MemRegion dst_region;
       dst_region.ptr_ = config.dst_buffer;
       dst_region.size_ = config.data_size;
+      dst_region.lkey_ = config.dst_lkey;
+      dst_region.rkey_ = config.dst_rkey;
       
       uint64_t tx_id = channel->prepSend(dst_region, src_region);
       if (tx_id != 0) {
@@ -246,6 +251,8 @@ void HostExecutorManager::update_dependencies(OperatorLayout* primitive) {
   int old_remaining = std::atomic_fetch_sub(reinterpret_cast<std::atomic<int>*>(&primitive->remaining_executors), 1);
   if (old_remaining != 1) return;
 
+  std::atomic_fetch_add(reinterpret_cast<std::atomic<uint64_t>*>(graph_layout_->completed_operator), 1);
+
   for (int j = 0; j < primitive->num_next; ++j) {
     OperatorLayout* next_primitive = primitive->next_operators[j];
     if (!next_primitive) continue;
@@ -254,6 +261,12 @@ void HostExecutorManager::update_dependencies(OperatorLayout* primitive) {
     if (old_dependency == 1) {
       enqueue_primitive(next_primitive);
     }
+  }
+
+  uint64_t num_completed = std::atomic_fetch_add(reinterpret_cast<std::atomic<uint64_t>*>(graph_layout_->completed_operator), 0);
+
+  if (num_completed == *graph_layout_->completed_operator) {
+    running_.store(false);
   }
 }
 

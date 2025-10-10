@@ -57,6 +57,7 @@ public:
 
 struct WorkspaceHandle {
   uint64_t operator_id;
+  int rank;
   std::vector<int> participant_ranks;
   std::map<int, std::vector<GlobalBufferID>> buffers;
   

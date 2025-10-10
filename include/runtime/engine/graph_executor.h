@@ -1,4 +1,5 @@
 #pragma once
+#include <cstdint>
 #include <memory>
 #include <map>
 #include <runtime/api/repr.h>
@@ -17,7 +18,11 @@ struct PrimitiveConfig {
   DataType dtype;
   int target_rank;
   void* src_buffer;
-  void* dst_buffer; 
+  void* dst_buffer;
+  uint32_t src_lkey;
+  uint32_t src_rkey;
+  uint32_t dst_lkey;
+  uint32_t dst_rkey;
   unsigned long long data_size;
   ComputeType compute_op;
   int signal_value;
@@ -44,6 +49,8 @@ struct ReadyQueueLayout {
 };
 
 struct GraphBufferLayout {
+  uint64_t *completed_operator;
+  uint64_t *total_operator;
   OperatorLayout* operators;
   uint64_t num_operators;
   ReadyQueueLayout* ready_queues;

@@ -1,10 +1,14 @@
 #include "runtime/engine/graph_executor.h"
 #include "plugins/ahost/executor.h"
 #include "plugins/acu/executor.h"
+#include "runtime/api/repr.h"
 #include "utils/allocator.h"
+#include "utils/hex_utils.hpp"
 #include "utils/logging.h"
+#include <cstdint>
 #include <cuda_runtime.h>
 #include <cstring>
+#include <tuple>
 
 namespace pccl::engine {
 
@@ -49,13 +53,13 @@ public:
       cuda_executor_->launch();
     }
     issued_ = true;
-    PCCL_LOG_INFO("Graph execution started");
+    PCCL_DLOG_INFO("Graph execution started");
   }
 
   void wait() {
     if (!issued_) return;
 
-    PCCL_LOG_INFO("Waiting for graph execution to complete");
+    PCCL_DLOG_INFO("Waiting for graph execution to complete");
     if (host_executor_) {
       host_executor_->wait();
     }
@@ -65,7 +69,7 @@ public:
 
     cleanup();
     issued_ = false;
-    PCCL_LOG_INFO("Graph execution completed");
+    PCCL_DLOG_INFO("Graph execution completed");
   }
 
   void initialize_ready_queues() {
@@ -102,15 +106,21 @@ private:
     graph_layout_->operators = static_cast<OperatorLayout*>(utils::allocate(runtime::ExecutorType::CPU, op_size));
     graph_layout_->ready_queues = static_cast<ReadyQueueLayout*>(utils::allocate(runtime::ExecutorType::CPU, queue_size));
 
+    graph_layout_->completed_operator = static_cast<uint64_t*>(utils::allocate(runtime::ExecutorType::CPU, sizeof(uint64_t)));
+    graph_layout_->total_operator = static_cast<uint64_t*>(utils::allocate(runtime::ExecutorType::CPU, sizeof(uint64_t)));
+
+    *(graph_layout_->completed_operator) = 0;
+    *(graph_layout_->total_operator) = operators.size();
+
     if (!graph_layout_->operators || !graph_layout_->ready_queues) {
       PCCL_LOG_ERROR("Failed to allocate graph layout memory");
       return false;
     }
 
-    memset(graph_layout_->operators, 0, op_size);
-    memset(graph_layout_->ready_queues, 0, queue_size);
+    std::memset(graph_layout_->operators, 0, op_size);
+    std::memset(graph_layout_->ready_queues, 0, queue_size);
 
-    int self_rank = workspace_handle.participant_ranks.empty() ? 0 : workspace_handle.participant_ranks[0];
+    int self_rank = workspace_handle.rank;
 
     for (size_t i = 0; i < operators.size(); ++i) {
       auto& src_op = operators[i];
@@ -132,7 +142,15 @@ private:
       engine_config.signal_value = src_op.signal_value;
 
       engine_config.src_buffer = resolve_buffer_address(workspace_handle, src_op.src_buffer_idx, self_rank, src_op.executor_type);
-      engine_config.dst_buffer = resolve_buffer_address(workspace_handle, src_op.dst_buffer_idx, self_rank, src_op.executor_type);
+      engine_config.dst_buffer = resolve_buffer_address(workspace_handle, src_op.dst_buffer_idx, src_op.target_rank, src_op.executor_type);
+
+      auto src_keys = resolve_buffer_keys(workspace_handle, src_op.src_buffer_idx, self_rank, src_op.executor_type);
+      auto dst_keys = resolve_buffer_keys(workspace_handle, src_op.src_buffer_idx, self_rank, src_op.executor_type);
+
+      engine_config.src_lkey = std::get<0>(src_keys);
+      engine_config.src_rkey = std::get<1>(src_keys);
+      engine_config.dst_lkey = std::get<0>(dst_keys);
+      engine_config.dst_rkey = std::get<1>(dst_keys);
 
       memcpy(&dst_op.primitive_config, &engine_config, sizeof(PrimitiveConfig));
 
@@ -173,6 +191,27 @@ private:
     return buffer_id.addr;
   }
 
+  std::tuple<uint32_t, uint32_t> resolve_buffer_keys(const engine::WorkspaceHandle& workspace_handle, int buffer_idx, int rank, runtime::ExecutorType executor_type) {
+    auto rank_buffers_it = workspace_handle.buffers.find(rank);
+    if (rank_buffers_it == workspace_handle.buffers.end()) {
+      PCCL_LOG_ERROR("No buffers found for rank {}", rank);
+      return {0, 0};
+    }
+
+    const auto& buffers = rank_buffers_it->second;
+    if (buffer_idx >= static_cast<int>(buffers.size())) {
+      PCCL_LOG_ERROR("Buffer index {} out of range for rank {}", buffer_idx, rank);
+      return {0, 0};
+    }
+
+    const auto& buffer_id = buffers[buffer_idx];
+    uint32_t lkey, rkey;
+    utils::unmarshal_from_hex_str(&lkey, buffer_id.shareable_handles.at("lkey"));
+    utils::unmarshal_from_hex_str(&rkey, buffer_id.shareable_handles.at("rkey"));
+
+    return {lkey, rkey};
+  }
+
   bool allocate_unified_memory() {
     if (!graph_layout_) return false;
 
@@ -186,14 +225,14 @@ private:
         return false;
       }
 
-      queue.producer_type = static_cast<runtime::ExecutorType>(i / 2);
-      queue.consumer_type = static_cast<runtime::ExecutorType>(i % 2);
+      queue.producer_type = static_cast<runtime::ExecutorType>(i / (int)ExecutorType::LAST);
+      queue.consumer_type = static_cast<runtime::ExecutorType>(i % (int)ExecutorType::LAST);
       queue.head = 0;
       queue.tail = 0;
       queue.capacity = 1024;
     }
 
-    PCCL_LOG_DEBUG("Allocated unified memory for {} queues", graph_layout_->num_queues);
+    PCCL_DLOG_DEBUG("Allocated unified memory for {} queues", graph_layout_->num_queues);
     return true;
   }
 

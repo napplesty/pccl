@@ -572,6 +572,8 @@ bool executeGraph(PrimitiveGrpah& graph,
 
     memory_manager->post_sync_workspace(workspace_handle);
 
+    workspace_handle.rank = current_rank;
+
     if (workspace_handle.buffers.empty()) {
       PCCL_LOG_ERROR("Failed to create workspace for operator {}", operator_id);
       return false;
