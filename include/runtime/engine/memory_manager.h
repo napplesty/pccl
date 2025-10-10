@@ -95,14 +95,24 @@ public:
   
   void setCommInterface(std::shared_ptr<MemoryManagerCommInterface> comm_interface);
   GlobalBufferID &get_signal_buffer() {
-    return signal_buffer;
+    int rank = signal_buffer.getRank();
+    int type = (int)signal_buffer.getExecutorType();
+    int index = signal_buffer.getBufferIdx();
+    auto triple = std::make_tuple(rank, type, index);
+    return buffer_caches_.at(triple);
   }
 
   GlobalBufferID &get_tmp_buffer() {
-    return remote_signal_buffer_cache;
+    int rank = remote_signal_buffer_cache.getRank();
+    int type = (int)remote_signal_buffer_cache.getExecutorType();
+    int index = remote_signal_buffer_cache.getBufferIdx();
+    auto triple = std::make_tuple(rank, type, index);
+    return buffer_caches_.at(triple);
   }
 
-  GlobalBufferID &get_buffer_with_triple(std::tuple<int, int, int> &triple);
+  GlobalBufferID &get_buffer_with_triple(std::tuple<int, int, int> &triple) {
+    return buffer_caches_.at(triple);
+  }
 
 private:
   void setupSignalSynchronization();
@@ -115,6 +125,8 @@ private:
   
   std::unordered_map<uint64_t, WorkspaceHandle> active_workspaces_;
   std::map<int, std::vector<GlobalBufferID>> global_buffers_;
+
+  std::map<std::tuple<int, int, int>, GlobalBufferID> buffer_caches_;
   
   std::set<int> ranks_in_a_host_;
   

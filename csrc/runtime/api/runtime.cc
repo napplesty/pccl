@@ -7,6 +7,7 @@
 #include "plugins/atcp/tcp_adapter.h"
 #include "plugins/aroce/roce_adapter.h"
 #include "plugins/aroce/roce_utils.h"
+#include "utils/exception.hpp"
 #include "utils/logging.h"
 #include "utils/hex_utils.hpp"
 #include "utils/debug.hpp"
@@ -20,6 +21,8 @@
 #include <ifaddrs.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
+#include <string>
+#include <thread>
 #include <tuple>
 #include <vector>
 
@@ -43,6 +46,7 @@ static std::tuple<int, int, int> get_signature(engine::GlobalBufferID& buffer_id
 
 static void portable_roce_read_sync(int src_rank, engine::GlobalBufferID& dstBuffer, engine::GlobalBufferID& srcBuffer) {
   int self_rank = current_rank;
+
   std::map<std::string, std::string> &self_attrs = cluster_configs[self_rank].endpoint_configs;
   uint64_t qp_id, conn_id;
   utils::unmarshal_from_hex_str(&qp_id, self_attrs.at(std::format("pccl.roce.{}.{}.qp_id", self_rank, src_rank)));
@@ -50,7 +54,7 @@ static void portable_roce_read_sync(int src_rank, engine::GlobalBufferID& dstBuf
 
   uint32_t lkey, rkey;
   utils::unmarshal_from_hex_str(&lkey, dstBuffer.shareable_handles.at("lkey"));
-  utils::unmarshal_from_hex_str(&rkey, srcBuffer.shareable_handles.at("lkey"));
+  utils::unmarshal_from_hex_str(&rkey, srcBuffer.shareable_handles.at("rkey"));
   
   ibv_send_wr wr{};
   ibv_sge sge{};
@@ -62,38 +66,46 @@ static void portable_roce_read_sync(int src_rank, engine::GlobalBufferID& dstBuf
   wr.wr_id = 0xbf16f32f16f8;
   wr.next = nullptr;
   wr.sg_list = &sge;
-
   wr.num_sge = 1;
+
   wr.opcode = IBV_WR_RDMA_READ;
   wr.send_flags = IBV_SEND_SIGNALED;
 
   wr.wr.rdma.remote_addr = reinterpret_cast<uint64_t>(srcBuffer.addr);
   wr.wr.rdma.rkey = rkey;
+  ibv_send_wr *bad_wr = nullptr;
 
-  if (!global_verbs_manager->postSend(conn_id, qp_id, &wr, nullptr)) {
+  if (!global_verbs_manager->postSend(conn_id, qp_id, &wr, &bad_wr)) {
     PCCL_LOG_CRITICAL("Fail to read");
   }
-
+  PCCL_LOG_DEBUG("read issued");
   ibv_wc wc;
-  while(true) {
+  bool succeeded = false;
+  for(int i = 0; i < 1000; i++) {
     global_verbs_manager->pollCQ(conn_id, 1, &wc);
     if(wc.wr_id == 0xbf16f32f16f8) {
       if (wc.status == IBV_WC_SUCCESS) {
+        succeeded = true;
         break;
       } else {
         PCCL_LOG_CRITICAL("Fail to read");
       }
     }
   }
-  
+  if (succeeded) {
+    PCCL_LOG_DEBUG("Read from participant {}", src_rank);
+  } else {
+    PCCL_LOG_DEBUG("Failed to read from participant {}", src_rank);
+  }
   return;
 }
 
 static std::vector<engine::GlobalBufferID> portable_parse_signals(void *signals, uint64_t operator_id, int src_rank, int num_expected) {
   int num_loaded = 0;
   int64_t *signal_buffer_ptr = (int64_t *)signals;
-  for(int i = 0; i < engine::max_buffers_per_type; i++) {
-    if (signal_buffer_ptr[(int)ExecutorType::CUDA * engine::max_buffers_per_type + i] == (int64_t)operator_id) {
+  int num_buffer = cluster_configs[0].buffer_nums[ExecutorType::CUDA];
+  for(int i = 0; i < num_buffer*2; i++) {
+    if (signal_buffer_ptr[(int)ExecutorType::CUDA * engine::max_buffers_per_type + i] == operator_id) {
       num_loaded ++;
     }
   }
@@ -101,8 +113,8 @@ static std::vector<engine::GlobalBufferID> portable_parse_signals(void *signals,
     return {};
   }
   std::vector<engine::GlobalBufferID> buff;
-  for(int i = 0; i < engine::max_buffers_per_type; i++) {
-    if (signal_buffer_ptr[(int)ExecutorType::CUDA * engine::max_buffers_per_type + i] == (int64_t)operator_id) {
+  for(int i = 0; i < num_buffer; i++) {
+    if (signal_buffer_ptr[(int)ExecutorType::CUDA * engine::max_buffers_per_type + i] == operator_id) {
       std::tuple<int, int, int> triple = std::make_tuple(src_rank, (int)ExecutorType::CUDA, i);
       buff.push_back(memory_manager->get_buffer_with_triple(triple));
     }
@@ -117,7 +129,7 @@ public:
   bool registerMemoryRegion(engine::GlobalBufferID& buffer_id) override {
     if (!global_verbs_manager) return false;
     int access = IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_READ | 
-                 IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_REMOTE_ATOMIC;
+                 IBV_ACCESS_REMOTE_WRITE;
     auto mr = std::make_shared<pccl::communicator::VerbsMemoryRegion>(
       *global_verbs_manager->getPD(), buffer_id.addr, buffer_id.getBufferSize(), access);
     
@@ -144,13 +156,17 @@ public:
       if (participant == current_rank) {
         continue;
       }
+      PCCL_LOG_DEBUG("Handling participant {}", participant);
       auto triple = std::make_tuple(participant, (int)ExecutorType::CPU, 0);
       engine::GlobalBufferID &src_buf = memory_manager->get_buffer_with_triple(triple);
-      while(true) {
+
+      for(int i = 0; i < 1000; i++) {
         portable_roce_read_sync(participant, tmp_buf, src_buf);
+        PCCL_LOG_DEBUG("loaded participant {}'s signals", participant);
         std::vector<engine::GlobalBufferID> bufs = \
             portable_parse_signals(tmp_buf.addr, handle.operator_id, participant, handle.buffers.at(current_rank).size());
         if (bufs.size() > 0) {
+          PCCL_LOG_DEBUG("Found buffers for operator {}, participant {}", handle.operator_id, participant);
           handle.buffers[participant] = bufs;
           break;
         }
@@ -238,15 +254,9 @@ void registerCommunicationResources(RuntimeConfig& config) {
       
       std::string qp_id_key = std::format("pccl.roce.{}.{}.qp_id", current_rank, peer_rank);
       std::string qp_key = std::format("pccl.roce.{}.{}.qp_num", current_rank, peer_rank);
-      std::string lid_key = std::format("pccl.roce.{}.{}.lid", current_rank, peer_rank);
-      std::string gid_key = std::format("pccl.roce.{}.{}.gid", current_rank, peer_rank);
       
       config.endpoint_configs[qp_id_key] = utils::marshal_to_hex_str(&qp_id, sizeof(qp_id));
       config.endpoint_configs[qp_key] = std::to_string(metadata.qp_num);
-      config.endpoint_configs[lid_key] = std::to_string(metadata.lid);
-      config.endpoint_configs[gid_key] = utils::marshal_to_hex_str(&metadata.gid, sizeof(metadata.gid));
-      
-      PCCL_LOG_DEBUG("Precreated QP for peer {}: qp_num={}, lid={}", peer_rank, metadata.qp_num, metadata.lid);
     }
   }
 }
@@ -548,16 +558,25 @@ bool executeGraph(PrimitiveGrpah& graph,
     std::map<runtime::ExecutorType, size_t> buffer_requirements;
     auto buffers = graph.getBuffers();
     for (const auto& buffer : buffers) {
-      buffer_requirements[buffer.executor_type] = buffer.size;
+      if (!buffer_requirements.contains(buffer.executor_type)) {
+        buffer_requirements[buffer.executor_type] = 0;
+      }
+      buffer_requirements[buffer.executor_type] ++;
     }
-    engine::WorkspaceHandle workspace_handle = 
-        memory_manager->get_workspace_for_operator(operator_id, participants, buffer_requirements);
+
+    PCCL_LOG_DEBUG("buffers: {}", buffer_requirements[ExecutorType::CUDA]);
+    
+    engine::WorkspaceHandle workspace_handle = memory_manager->get_workspace_for_operator(operator_id, participants, buffer_requirements);
+
+    PCCL_LOG_DEBUG("Created local workspace for operator {}, buffer num {}", operator_id, workspace_handle.buffers.at(current_rank).size());
 
     memory_manager->post_sync_workspace(workspace_handle);
-    
+
     if (workspace_handle.buffers.empty()) {
       PCCL_LOG_ERROR("Failed to create workspace for operator {}", operator_id);
       return false;
+    } else {
+      PCCL_LOG_DEBUG("Created global workspace for operator {}", operator_id);
     }
 
     std::map<ExecutorType, int> executor_config = getExecutorConfig(graph);

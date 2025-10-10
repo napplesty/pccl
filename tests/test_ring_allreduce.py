@@ -4,9 +4,7 @@ import os
 import sys
 import numpy as np
 
-# 导入PCCL模块
-sys.path.append('/root/pccl2/pccl')
-import pccl
+import pccl.cccl as pccl
 
 def setup_distributed():
     """设置分布式环境"""
@@ -34,8 +32,8 @@ def create_runtime_configs(world_size):
         
         # 缓冲区配置
         config.buffer_nums = {
-            pccl.ExecutorType.CPU: 20,   # 信号缓冲区
-            pccl.ExecutorType.CUDA: 10   # 数据缓冲区
+            pccl.ExecutorType.CPU: 10,   # 信号缓冲区
+            pccl.ExecutorType.CUDA: 32   # 数据缓冲区
         }
         
         config.buffer_sizes = {
@@ -47,17 +45,20 @@ def create_runtime_configs(world_size):
         config.endpoint_configs = {
             "pccl.runtime.rank": str(i),
             "pccl.runtime.world_size": str(world_size),
-            "pccl.runtime.use_tcp": "true",
-            "pccl.runtime.host_sign": f"host_{i}",
+            "pccl.runtime.host_sign": f"host",
             
             # OOB配置
-            "pccl.oob.ip": "127.0.0.1",
-            "pccl.oob.port": str(10000 + i),
+            "pccl.oob.ip": "29.119.98.121",
+            "pccl.oob.port": str(31250 + i),
             
-            # TCP配置
+            "pccl.runtime.use_roce": "true",
+            "pccl.roce.port_num": "1",
+            "pccl.roce.gid_index": "3",
+            "pccl.roce.lid": "0",
+            "pccl.roce.device_name": f"mlx5_bond_{i+1}",
+            "pccl.runtime.use_tcp": "false",
             "pccl.tcp.local_ip": "127.0.0.1",
-            "pccl.tcp.remote_ip": "127.0.0.1",
-            "pccl.tcp.remote_port": str(10000 + ((i + 1) % world_size)),
+            "pccl.tcp.local_port": str(31280 + i),
         }
         
         runtime_configs.append(config)
@@ -280,7 +281,7 @@ def main():
     expected_output = torch.zeros_like(input_tensor)
     
     # 使用PyTorch计算预期结果
-    dist.all_reduce(input_tensor.clone(), op=dist.ReduceOp.SUM, out=expected_output)
+    dist.all_reduce(input_tensor.clone(), op=dist.ReduceOp.SUM)
     
     # 重置输入数据
     input_tensor = torch.randn(data_size, device=f'cuda:{rank}', dtype=dtype)

@@ -1,4 +1,7 @@
 #include "plugins/aroce/roce_utils.h"
+#include "utils/logging.h"
+#include <cerrno>
+#include <cstdint>
 #include <infiniband/verbs.h>
 #include <utils/exception.hpp>
 #include <format>
@@ -44,6 +47,7 @@ void VerbsLib::load(const std::string& library_path) {
   LOAD_VERBS_FUNC(ibv_destroy_qp)
   LOAD_VERBS_FUNC(ibv_modify_qp)
   LOAD_VERBS_FUNC(ibv_wc_status_str)
+  LOAD_VERBS_FUNC(ibv_query_qp)
   #undef LOAD_VERBS_FUNC
 }
 
@@ -157,6 +161,10 @@ int VerbsLib::reqNotifyCq(ibv_cq* cq, int solicited_only) {
 
 const char* VerbsLib::wcStatusStr(enum ibv_wc_status status) { 
   return ibv_wc_status_str_func(status); 
+}
+
+int VerbsLib::queryQp(ibv_qp* qp, ibv_qp_attr* attr, int attr_mask, ibv_qp_init_attr *init_attr) {
+  return ibv_query_qp_func(qp, attr, attr_mask, init_attr);
 }
 
 VerbsDevList::VerbsDevList() {
@@ -529,7 +537,7 @@ VerbsManager::VerbsManager() {
 }
 
 VerbsManager::~VerbsManager() {
-    std::lock_guard<std::mutex> lock(connections_mutex_);
+    std::lock_guard<std::recursive_mutex> lock(connections_mutex_);
     connections_.clear();
 }
 
@@ -548,7 +556,7 @@ VerbsManager::VerbsManager(VerbsManager&& other) noexcept
 
 VerbsManager& VerbsManager::operator=(VerbsManager&& other) noexcept {
   if (this != &other) {
-    std::lock_guard<std::mutex> lock(connections_mutex_);
+    std::lock_guard<std::recursive_mutex> lock(connections_mutex_);
     device_list_ = std::move(other.device_list_);
     context_ = std::move(other.context_);
     pd_ = std::move(other.pd_);
@@ -603,7 +611,7 @@ VerbsManager::ConnectionId VerbsManager::createConnection(const ConnectionConfig
   conn_info.config = config;
   conn_info.cq = std::make_shared<VerbsCompletionQueue>(*context_, config.cq_size, nullptr);
     
-  std::lock_guard<std::mutex> lock(connections_mutex_);
+  std::lock_guard<std::recursive_mutex> lock(connections_mutex_);
   connections_[conn_id] = std::move(conn_info);
     
   return conn_id;
@@ -614,7 +622,7 @@ bool VerbsManager::destroyConnection(ConnectionId conn_id, QPId qp_id) {
     return false;
   }
     
-  std::lock_guard<std::mutex> lock(connections_mutex_);
+  std::lock_guard<std::recursive_mutex> lock(connections_mutex_);
   auto it = connections_.find(conn_id);
   if (it == connections_.end()) {
     return false;
@@ -634,7 +642,7 @@ bool VerbsManager::connect(ConnectionId conn_id, QPId qp_id, const VerbsRemotePe
     return false;
   }
   
-  std::lock_guard<std::mutex> lock(connections_mutex_);
+  std::lock_guard<std::recursive_mutex> lock(connections_mutex_);
   auto it = connections_.find(conn_id);
   if (it == connections_.end()) {
     return false;
@@ -644,7 +652,30 @@ bool VerbsManager::connect(ConnectionId conn_id, QPId qp_id, const VerbsRemotePe
   if (qp_it == it->second.qps.end()) {
     return false;
   }
-  
+
+  PCCL_DLOG_DEBUG(std::format("Processing QP {} for connection {}", qp_id, conn_id));
+
+  PCCL_DLOG_DEBUG("Starting to modify QP {} to RTR state", qp_id);
+  if (!modifyQPToRTR(conn_id, qp_id, 
+            remote_peer_info.qp_num,
+            remote_peer_info.lid,
+            0,
+            getPortNum(conn_id),
+            0,
+            &remote_peer_info.gid)) {
+    PCCL_DLOG_DEBUG(std::format("Failed to modify QP {} to RTR state.", qp_id));
+    return false;
+  }
+  PCCL_DLOG_DEBUG("Modified QP {} to RTR state", qp_id);
+
+  PCCL_DLOG_DEBUG("Starting to modify QP {} to RTS state", qp_id);
+  if (!modifyQPToRTS(conn_id, qp_id)) {
+    PCCL_DLOG_DEBUG(std::format("Failed to modify QP {} to RTS state.", qp_id));
+    return false;
+  }
+  PCCL_DLOG_DEBUG("Modified QP {} to RTS state", qp_id);
+  PCCL_DLOG_DEBUG(std::format("Connection {} successfully connected.", conn_id));
+
   qp_it->second->set_connected(true);
   return true;
 }
@@ -654,7 +685,7 @@ bool VerbsManager::disconnect(ConnectionId conn_id, QPId qp_id) {
     return false;
   }
   
-  std::lock_guard<std::mutex> lock(connections_mutex_);
+  std::lock_guard<std::recursive_mutex> lock(connections_mutex_);
   auto it = connections_.find(conn_id);
   if (it == connections_.end()) {
     return false;
@@ -674,7 +705,7 @@ VerbsManager::QPId VerbsManager::createQP(ConnectionId conn_id, const QPConfig& 
     return 0;
   }
     
-  std::lock_guard<std::mutex> lock(connections_mutex_);
+  std::lock_guard<std::recursive_mutex> lock(connections_mutex_);
   auto it = connections_.find(conn_id);
   if (it == connections_.end()) {
     return 0;
@@ -726,12 +757,8 @@ bool VerbsManager::modifyQPToInit(ConnectionId conn_id, QPId qp_id) {
   attr.qp_access_flags = IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE | 
                          IBV_ACCESS_REMOTE_READ | IBV_ACCESS_REMOTE_ATOMIC;
   
-  try {
-    qp->modify(attr, IBV_QP_STATE | IBV_QP_PKEY_INDEX | IBV_QP_PORT | IBV_QP_ACCESS_FLAGS);
-    return true;
-  } catch (const std::exception& e) {
-    return false;
-  }
+
+  return qp->modify(attr, IBV_QP_STATE | IBV_QP_PKEY_INDEX | IBV_QP_PORT | IBV_QP_ACCESS_FLAGS) == 0;
 }
 
 bool VerbsManager::modifyQPToRTR(ConnectionId conn_id, QPId qp_id, 
@@ -750,7 +777,7 @@ bool VerbsManager::modifyQPToRTR(ConnectionId conn_id, QPId qp_id,
   ibv_qp_attr attr;
   std::memset(&attr, 0, sizeof(attr));
   attr.qp_state = IBV_QPS_RTR;
-  attr.path_mtu = IBV_MTU_4096;
+  attr.path_mtu = IBV_MTU_2048;
   attr.dest_qp_num = remote_qpn;
   attr.rq_psn = 0;
   attr.max_dest_rd_atomic = 1;
@@ -759,19 +786,22 @@ bool VerbsManager::modifyQPToRTR(ConnectionId conn_id, QPId qp_id,
   attr.ah_attr.sl = sl;
   attr.ah_attr.src_path_bits = 0;
   attr.ah_attr.port_num = port_num;
-  attr.ah_attr.is_global = (sgid != nullptr);
-  if (sgid) {
-    attr.ah_attr.grh.hop_limit = 8;
-    attr.ah_attr.grh.dgid = *sgid;
-    attr.ah_attr.grh.sgid_index = pkey_index;
+  attr.ah_attr.is_global = (sgid != nullptr && sgid->global.interface_id != 0) ? 1 : 0;
+  if (attr.ah_attr.is_global) {
+    attr.ah_attr.grh.hop_limit = 64;
+    memcpy(&attr.ah_attr.grh.dgid, sgid, sizeof(ibv_gid));
+    attr.ah_attr.grh.sgid_index = connections_[conn_id].config.gid_index;
   }
     
-  int mask = IBV_QP_STATE | IBV_QP_PATH_MTU | IBV_QP_DEST_QPN |
-              IBV_QP_RQ_PSN | IBV_QP_TIMEOUT | IBV_QP_RETRY_CNT |
-              IBV_QP_RNR_RETRY | IBV_QP_MIN_RNR_TIMER |
-              IBV_QP_ALT_PATH | IBV_QP_PATH_MIG_STATE;
+  int mask = IBV_QP_STATE | IBV_QP_AV | IBV_QP_PATH_MTU |
+           IBV_QP_DEST_QPN | IBV_QP_RQ_PSN | IBV_QP_MAX_DEST_RD_ATOMIC |
+           IBV_QP_MIN_RNR_TIMER;
+
+  int ret = qp->modify(attr, mask);
   
-  return qp->modify(attr, mask) == 0;
+  PCCL_DLOG_DEBUG("RTR modification result: {}", ret);
+  
+  return ret == 0;
 }
 
 bool VerbsManager::modifyQPToRTS(ConnectionId conn_id, QPId qp_id) {
@@ -800,16 +830,9 @@ bool VerbsManager::modifyQPToRTS(ConnectionId conn_id, QPId qp_id) {
 }
 
 bool VerbsManager::postSend(ConnectionId conn_id, QPId qp_id, ibv_send_wr* wr, ibv_send_wr** bad_wr) {
-  if (!initialized_) {
-    return false;
-  }
-  
   auto qp = getQP(conn_id, qp_id);
-  if (!qp) {
-    return false;
-  }
-  
-  return qp->postSend(wr, bad_wr) == 0;
+  int ret = qp->postSend(wr, bad_wr);
+  return ret == 0;
 }
 
 bool VerbsManager::postRecv(ConnectionId conn_id, QPId qp_id, ibv_recv_wr* wr, ibv_recv_wr** bad_wr) {
@@ -835,7 +858,7 @@ int VerbsManager::pollCQ(ConnectionId conn_id, int num_entries, ibv_wc* wc) {
 }
 
 std::shared_ptr<VerbsQueuePair> VerbsManager::getQP(ConnectionId conn_id, QPId qp_id) {
-  std::lock_guard<std::mutex> lock(connections_mutex_);
+  std::lock_guard<std::recursive_mutex> lock(connections_mutex_);
   auto it = connections_.find(conn_id);
   if (it == connections_.end()) {
     return nullptr;
@@ -850,7 +873,7 @@ std::shared_ptr<VerbsQueuePair> VerbsManager::getQP(ConnectionId conn_id, QPId q
 }
 
 std::shared_ptr<VerbsCompletionQueue> VerbsManager::getCQ(ConnectionId conn_id) {
-  std::lock_guard<std::mutex> lock(connections_mutex_);
+  std::lock_guard<std::recursive_mutex> lock(connections_mutex_);
   auto it = connections_.find(conn_id);
   if (it == connections_.end()) {
     return nullptr;
@@ -864,7 +887,7 @@ std::shared_ptr<VerbsProtectionDomain> VerbsManager::getPD() {
 }
 
 bool VerbsManager::isConnected(ConnectionId conn_id) const {
-  std::lock_guard<std::mutex> lock(connections_mutex_);
+  std::lock_guard<std::recursive_mutex> lock(connections_mutex_);
   auto it = connections_.find(conn_id);
   if (it == connections_.end()) {
     return false;
@@ -880,12 +903,12 @@ bool VerbsManager::isConnected(ConnectionId conn_id) const {
 }
 
 size_t VerbsManager::getConnectionCount() const {
-  std::lock_guard<std::mutex> lock(connections_mutex_);
+  std::lock_guard<std::recursive_mutex> lock(connections_mutex_);
   return connections_.size();
 }
 
 size_t VerbsManager::getQPCount(ConnectionId conn_id) const {
-  std::lock_guard<std::mutex> lock(connections_mutex_);
+  std::lock_guard<std::recursive_mutex> lock(connections_mutex_);
   auto it = connections_.find(conn_id);
   if (it == connections_.end()) {
     return 0;
@@ -894,25 +917,19 @@ size_t VerbsManager::getQPCount(ConnectionId conn_id) const {
   return it->second.qps.size();
 }
 
+uint8_t VerbsManager::getPortNum(ConnectionId conn_id) const {
+  return connections_.at(conn_id).config.port_num;
+}
+
 VerbsRemotePeerInfo VerbsManager::getLocalMetadata(ConnectionId conn_id, QPId qp_id) {
   VerbsRemotePeerInfo info;
-  
-  if (!initialized_) {
-    return info;
-  }
   
   auto qp = getQP(conn_id, qp_id);
   if (!qp) {
     return info;
   }
   
-  info.qp_num = qp->getQpNum();
-  
-  auto port_attr = context_->queryPort(1);
-  info.lid = port_attr.lid;
-  
-  info.gid = context_->queryGid(1, 0);
-  
+  info.qp_num = qp->getQpNum(); 
   return info;
 }
 

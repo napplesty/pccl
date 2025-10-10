@@ -6,8 +6,6 @@
 
 namespace pccl::communicator {
 
-
-
 RoCEAdapter::RoCEAdapter(const Endpoint& self, const Endpoint& peer)
   : self_endpoint_(self), peer_endpoint_(peer) {
   utils::unmarshal_from_hex_str(&verbs_manager_, self.attributes_.at("pccl.roce.verbsManager.global"));
@@ -35,10 +33,11 @@ bool RoCEAdapter::connect(const Endpoint& self, const Endpoint& peer) {
 
     std::string qp_id_key = std::format("pccl.roce.{}.{}.qp_id", self_rank, peer_rank);
     std::string qp_key = std::format("pccl.roce.{}.{}.qp_num", peer_rank, self_rank);
-    std::string lid_key = std::format("pccl.roce.{}.{}.lid", peer_rank, self_rank);
-    std::string gid_key = std::format("pccl.roce.{}.{}.gid", peer_rank, self_rank);
+    std::string lid_key = std::format("pccl.roce.lid", peer_rank, self_rank);
+    std::string gid_key = std::format("pccl.roce.gid", peer_rank, self_rank);
     
     pccl::communicator::VerbsRemotePeerInfo remote_info;
+
     remote_info.qp_num = std::stoul(peer.attributes_.at(qp_key));
     remote_info.lid = std::stoul(peer.attributes_.at(lid_key));
 
@@ -46,7 +45,10 @@ bool RoCEAdapter::connect(const Endpoint& self, const Endpoint& peer) {
     utils::unmarshal_from_hex_str(&remote_info.gid, peer.attributes_.at(gid_key));
     utils::unmarshal_from_hex_str(&qp_id_, self.attributes_.at(qp_id_key));
     
-    PCCL_LOG_DEBUG("RoCE adapter connecting");
+    PCCL_LOG_DEBUG("RoCE adapter connecting with parameters:");
+    PCCL_LOG_DEBUG("  Self Rank: {}, Peer Rank: {}", self_rank, peer_rank);
+    PCCL_LOG_DEBUG("  Remote QP_num: {}, LID: {}", remote_info.qp_num, remote_info.lid);
+    PCCL_LOG_DEBUG("  Local Conn_ID: {}, QP_ID: {}", conn_id_, qp_id_);
 
     if (!verbs_manager_->connect(conn_id_, qp_id_, remote_info)) {
       PCCL_LOG_ERROR("Failed to connect RoCE QP");

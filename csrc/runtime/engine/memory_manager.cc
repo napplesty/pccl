@@ -4,8 +4,14 @@
 #include "utils/exception.hpp"
 #include "utils/logging.h"
 #include <cstdint>
+#include <tuple>
 
 namespace pccl::engine {
+
+static std::tuple<int, int, int> get_triple(const GlobalBufferID &buffer) {
+  std::tuple<int, int, int> triple = std::make_tuple(buffer.getRank(), (int)buffer.getExecutorType(), buffer.getBufferIdx());
+  return triple;
+}
 
 static int get_buffer_idx_in_signal_buffer(const GlobalBufferID &buffer) {
   return (int)buffer.getExecutorType() * max_buffers_per_type + buffer.getBufferIdx();
@@ -72,7 +78,6 @@ bool MemoryManager::initialize(runtime::RuntimeConfig& runtime_config) {
         }
         
         global_buffers_[self_rank_].push_back(gid);
-        
         PCCL_LOG_DEBUG("Allocated buffer: rank={}, type={}, idx={}, size={}, addr={}", 
                       self_rank_, static_cast<int>(executor_type.first), i, 
                       buffer_size, reinterpret_cast<uint64_t>(ptr));
@@ -97,6 +102,7 @@ bool MemoryManager::initialize(runtime::RuntimeConfig& runtime_config) {
 
     for (auto &buffer_id : global_buffers_[self_rank_]) {
       PCCL_HOST_ASSERT(comm_interface_->registerMemoryRegion(buffer_id), "Fail to register memory region");
+      buffer_caches_[get_triple(buffer_id)] = buffer_id;
     }
     
     initialized_ = true;
@@ -143,6 +149,7 @@ bool MemoryManager::initialize_cluster(const std::map<int, runtime::RuntimeConfi
               global_buffers_[rank] = {};
             }
             global_buffers_[rank].push_back(remote_buffer);
+            buffer_caches_[get_triple(remote_buffer)] = remote_buffer;
           } catch (const std::exception& e) {
             PCCL_LOG_WARN("Failed to parse buffer config for key {}: {}", key, e.what());
           }
@@ -179,6 +186,7 @@ void MemoryManager::shutdown() {
   
   global_buffers_.clear();
   active_workspaces_.clear();
+  buffer_caches_.clear();
   initialized_ = false;
   
   PCCL_LOG_INFO("MemoryManager shutdown completed");
@@ -195,20 +203,19 @@ WorkspaceHandle MemoryManager::get_workspace_for_operator(uint64_t operator_id,
   handle.participant_ranks = ranks;
   handle.buffers[self_rank_] = {};
 
-  int *signal_buffer_ptr = (int *)signal_buffer.addr;
+  int64_t *signal_buffer_ptr = (int64_t *)signal_buffer.addr;
 
   for (auto &it : buffer_requirements) {
-    size_t remain_nbytes = it.second;
     runtime::ExecutorType type = it.first;
+    int num_buffers = it.second;
     for (auto &buffer : global_buffers_[self_rank_]) {
       if (buffer.getExecutorType() != type) {
         continue;
       }
       if (signal_buffer_ptr[get_buffer_idx_in_signal_buffer(buffer)] == -1) {
-        remain_nbytes -= std::min((int)remain_nbytes, buffer.getBufferSize());
         signal_buffer_ptr[get_buffer_idx_in_signal_buffer(buffer)] = operator_id;
         handle.buffers[self_rank_].push_back(buffer);
-        if (remain_nbytes == 0) {
+        if (--num_buffers == 0) {
           break;
         }
       }

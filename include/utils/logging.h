@@ -20,7 +20,7 @@ std::shared_ptr<spdlog::logger> getLogger();
 #define PCCL_LOG_ERROR(...)   PCCL_LOG(spdlog::level::err, __VA_ARGS__)
 #define PCCL_LOG_CRITICAL(...) PCCL_LOG(spdlog::level::critical, __VA_ARGS__)
 
-#ifdef PCCL_DEBUG
+#ifndef PCCL_DEBUG
 #define PCCL_DLOG(level, ...) PCCL_LOG(level, __VA_ARGS__)
 #else
 #define PCCL_DLOG(level, ...) (void)0

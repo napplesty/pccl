@@ -46,6 +46,7 @@ public:
   int postRecv(ibv_qp* qp, ibv_recv_wr* wr, ibv_recv_wr** bad_wr);
   int reqNotifyCq(ibv_cq* cq, int solicited_only);
   const char* wcStatusStr(enum ibv_wc_status status);
+  int queryQp(ibv_qp* qp, ibv_qp_attr* attr, int attr_mask, ibv_qp_init_attr *init_attr);
 
 private:
   typedef ibv_device** (*ibv_get_device_list_fn)(int*);
@@ -70,6 +71,7 @@ private:
   typedef int (*ibv_destroy_qp_fn)(ibv_qp*);
   typedef int (*ibv_modify_qp_fn)(ibv_qp*, ibv_qp_attr*, int);
   typedef const char* (*ibv_wc_status_str_fn)(enum ibv_wc_status);
+  typedef int (*ibv_query_qp_fn)(ibv_qp*, ibv_qp_attr*, int, ibv_qp_init_attr*);
 
   VerbsLib() = default;
   void* handle_ = nullptr;
@@ -96,6 +98,7 @@ private:
   ibv_destroy_qp_fn ibv_destroy_qp_func = nullptr;
   ibv_modify_qp_fn ibv_modify_qp_func = nullptr;
   ibv_wc_status_str_fn ibv_wc_status_str_func = nullptr;
+  ibv_query_qp_fn ibv_query_qp_func = nullptr;
 };
 
 class VerbsDevList {
@@ -282,6 +285,7 @@ public:
   bool isConnected(ConnectionId conn_id) const;
   size_t getConnectionCount() const;
   size_t getQPCount(ConnectionId conn_id) const;
+  uint8_t getPortNum(ConnectionId conn_id) const;
   VerbsRemotePeerInfo getLocalMetadata(ConnectionId conn_id, QPId qp_id);
   inline std::shared_ptr<VerbsContext> getContext() const {
     return context_;
@@ -308,7 +312,7 @@ private:
   std::shared_ptr<VerbsProtectionDomain> pd_;
 
   std::unordered_map<ConnectionId, ConnectionInfo> connections_;
-  mutable std::mutex connections_mutex_;
+  mutable std::recursive_mutex connections_mutex_;
 
   std::atomic<ConnectionId> next_connection_id_{1};
   std::atomic<QPId> next_qp_id_{1};

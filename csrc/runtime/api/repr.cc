@@ -120,7 +120,7 @@ void PrimitiveGrpah::addBuffer(int idx, DataType dtype, unsigned long long size)
   config.buffer_idx = idx;
   config.dtype = dtype;
   config.size = size;
-  config.executor_type = ExecutorType::CPU;
+  config.executor_type = ExecutorType::CUDA;
   buffers_.push_back(config);
 }
 
