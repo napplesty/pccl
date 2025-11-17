@@ -1,0 +1,22 @@
+CompileFlags:
+  Remove: [-Xcompiler=*, 
+           --generate-dependencies-with-compile, 
+           --dependency-output, 
+           --expt-relaxed-constexpr, 
+           --compiler-options,
+           -gencode=arch=*,code=*]
+  Add: 
+    - -Wno-unknown-argument
+    - -Wno-unused-command-line-argument
+    - --no-cuda-version-check
+Diagnostics:
+  ClangTidy:
+    Remove: [readability-*]
+  Suppress: 
+    - unknown-argument
+    - unused-command-line-argument
+    - drv_cuda_version_unsupported
+Index:
+  Background: true
+  BackgroundThreads: 32
+  BackgroundIndexCacheSize: 0

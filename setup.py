@@ -56,6 +56,7 @@ build_include_dirs = [
     f'{current_dir}/thirdparty/spdlog/include',
     f'{current_dir}/thirdparty/asio/asio/include',
 ]
+
 build_libraries = ['cuda', 'cudart', 'nvrtc']
 build_library_dirs = [
     f'{CUDA_HOME}/lib64',
@@ -74,34 +75,10 @@ cuda_flags = ['-std=c++20',
               '-O3',
              ]
 
-data_include_dirs = [
-    # f'{current_dir}/thirdparty/cutlass/include/cute',
-    # f'{current_dir}/thirdparty/cutlass/include/cutlass',
-    # f'{current_dir}/thirdparty/composable_kernel/include/ck',
-    # f'{current_dir}/thirdparty/composable_kernel/include/ck_tile',
-]
-
-class CustomBuildPy(build_py):
-    def run(self):
-        self.prepare_includes()
-        build_py.run(self)
-
-    def prepare_includes(self):
-        build_include_dir = os.path.join(self.build_lib, 'pccl/include')
-        os.makedirs(build_include_dir, exist_ok=True)
-        
-        for d in data_include_dirs:
-            dirname = d.split('/')[-1]
-            src_dir = os.path.join(current_dir, d)
-            dst_dir = os.path.join(build_include_dir, dirname)
-
-            if os.path.exists(dst_dir):
-                shutil.rmtree(dst_dir)
-
-            shutil.copytree(src_dir, dst_dir)
-
-        build_libs_dir = os.path.join(self.build_lib, 'pccl/lib')
-        build_hwloc(build_libs_dir)
+debug = True
+if debug:
+    cxx_flags.extend(['-DPCCL_DEBUG'])
+    cuda_flags.extend(['-DPCCL_DEBUG'])
 
 if __name__ == '__main__':
     try:
@@ -125,25 +102,22 @@ if __name__ == '__main__':
             ]
         },
         ext_modules=[
-            CppExtension(name='pccl.cccl',
+            CppExtension(name='pccl.engine_c',
                          sources=sources,
                          include_dirs=build_include_dirs,
                          libraries=build_libraries,
                          library_dirs=build_library_dirs,
-                         extra_compile_args={'cxx': cxx_flags, 'cuda': cuda_flags},
-                         extra_link_args=['-static-libstdc++'])
+                         extra_compile_args={'cxx': cxx_flags, 
+                                             'cuda': cuda_flags},
+            )
         ],
-        install_requires=[
-            'scipy>=1.15.0',     
+        install_requires=[ 
             'PuLP>=3.2.0',      
-            'infomap>=2.7.0',   
-            'z3-solver>=4.15.0', 
-            'networkx>=3.4.0',  
-            'pyscipopt>=5.5.0', 
-            'ortools>=9.13.0',   
+            'z3-solver>=4.15.0',
         ],
         zip_safe=False,
         cmdclass={
-            'build_py': CustomBuildPy, 'build_ext': BuildExtension,
+            'build_ext': BuildExtension,
+            'build_py': build_py,
         },
     )
