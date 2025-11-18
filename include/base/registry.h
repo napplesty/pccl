@@ -10,7 +10,7 @@
 
 namespace engine_c {
 
-using GeneralType = short;
+using GeneralType = unsigned char;
 using PrimitiveType = GeneralType;
 using DataType = GeneralType;
 using ComputeType = GeneralType;

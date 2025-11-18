@@ -3,7 +3,7 @@
 
 namespace engine_c::utils {
 
-std::string serialize(void *ptr, size_t nbyte);
+std::string serialize(const void *ptr, size_t nbyte);
 void deserialize(void *ptr, std::string_view str);
 
 }

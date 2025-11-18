@@ -3,16 +3,16 @@
 
 namespace engine_c::utils {
 
-std::string serialize(void *ptr, size_t nbyte) {
+std::string serialize(const void *ptr, size_t nbyte) {
   static const char hex_chars[] = "0123456789abcdef";
   std::string result;
   result.reserve(nbyte * 2 + 1);
   
-  unsigned char *byte_ptr = static_cast<unsigned char *>(ptr);
+  const unsigned char *byte_ptr = static_cast<const unsigned char *>(ptr);
   for (size_t i = 0; i < nbyte; ++i) {
     unsigned char byte = byte_ptr[i];
     result.push_back(hex_chars[byte >> 4]);
-    result.push_back(hex_chars[byte & 0x0F]);
+    result.push_back(hex_chars[byte & 0x0f]);
   }
     
   return result;

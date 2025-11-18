@@ -32,6 +32,11 @@ std::string_view get_launch_time_stamp() {
   return _launch_time_stamp;
 }
 
+uint64_t getCurrentTimeNanos() {
+  return std::chrono::duration_cast<std::chrono::nanoseconds>(
+    std::chrono::high_resolution_clock::now().time_since_epoch()).count();
+}
+
 std::string get_current() {
   return format_time_with_microseconds(std::chrono::system_clock::now());
 }

@@ -2,6 +2,7 @@
 
 #include <map>
 #include <base/registry.h>
+#include <cluster/daemon.h>
 
 namespace engine_c {
 
@@ -21,14 +22,17 @@ struct NodeMeta {
 
 class ClusterManager {
 public:
-  ClusterManager(std::map<std::string, std::string>);
+  ClusterManager(std::map<std::string, std::string> &config);
 
-  bool initialize();
-  
+  bool initializeSelf();
+  bool initializeDaemonServer(NodeMeta &master_node);
+  bool killDaemonServer();
   const NodeMeta &getLocalMeta();
+  bool addOrUpdateNode(NodeMeta &node_meta);
 
 private:
   std::map<int, NodeMeta> node_infos_;
+  Daemon daemon_;
 };
 
 }
