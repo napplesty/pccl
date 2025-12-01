@@ -16,3 +16,6 @@
 [submodule "thirdparty/asio"]
 	path = thirdparty/asio
 	url = https://github.com/chriskohlhoff/asio.git
+[submodule "thirdparty/nvshmem"]
+	path = thirdparty/nvshmem
+	url = https://github.com/NVIDIA/nvshmem.git

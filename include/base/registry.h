@@ -4,7 +4,6 @@
 #include <string_view>
 #include <unordered_map>
 #include <set>
-#include <vector>
 #include <atomic>
 #include <mutex>
 
@@ -30,11 +29,12 @@ public:
   static ComputeType registerComputeType(std::string_view name);
   static DeviceType registerDeviceType(std::string_view name);
   static ExecutorType registerExecutorType(std::string_view name);
-
   static void registerCompatibility(std::string_view executor_name, std::string_view type_name);
 
   static std::string_view getTypeName(GeneralType type);
   static GeneralType getTypeId(std::string_view name);
+
+  static const std::set<DeviceType> &getDeviceTypes();
 
   static const std::set<GeneralType> &getCompatibleTypes(ExecutorType executor_type);
   static const std::set<ExecutorType> &getCompatibleExecutors(GeneralType type);

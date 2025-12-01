@@ -111,10 +111,6 @@ if __name__ == '__main__':
                                              'cuda': cuda_flags},
             )
         ],
-        install_requires=[ 
-            'PuLP>=3.2.0',      
-            'z3-solver>=4.15.0',
-        ],
         zip_safe=False,
         cmdclass={
             'build_ext': BuildExtension,

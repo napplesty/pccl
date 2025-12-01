@@ -2,7 +2,6 @@
 #include <common/time.h>
 #include <common/serialize.h>
 #include <nlohmann/json.hpp>
-#include <iostream>
 
 namespace engine_c {
 
